@@ -17,8 +17,6 @@ pub mod ui;
 mod parser;
 
 use clap::Parser;
-use parser::CDParser;
-
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -37,9 +35,8 @@ struct Args {
 async fn main() -> AppResult<()> {
     let args = Args::parse();
     
-    println!("Creating parser");
-    let mut parser = CDParser::new(&args.filepath).unwrap();
-    let idx = parser.parse()?;
+    let mut parser = parser::CDParser::new(&args.filepath).unwrap();
+    let idx = parser.get_index()?;
 
     if args.action == "tui" {
         // Create an application.
