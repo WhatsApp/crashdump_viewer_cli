@@ -14,13 +14,10 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
                 app.quit();
             }
         }
-        // Counter handlers
-        KeyCode::Right => {
-            app.increment_counter();
-        }
-        KeyCode::Left => {
-            app.decrement_counter();
-        }
+        // Tab switching
+        KeyCode::Char('l') | KeyCode::Right => app.next_tab(),
+        KeyCode::Char('h') | KeyCode::Left => app.prev_tab(),        
+
         // Other handlers you could add here.
         _ => {}
     }

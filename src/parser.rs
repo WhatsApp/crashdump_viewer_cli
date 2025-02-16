@@ -14,6 +14,7 @@ pub struct CDParser {
     filepath: PathBuf,
     filename: String,
     crash_dump_sections: CrashDumpSections,
+    index: Vec<String>
 }
 
 // sections for an erlang crash dump
@@ -29,6 +30,9 @@ pub struct CDParser {
 
 pub struct CrashDumpSections {
     pub premable: HashMap<String, String>,
+    pub processes: HashMap<String, String>,
+    pub binaries: HashMap<String, String>,
+    pub heap: HashMap<String, String>,
 }
 
 impl CDParser {
@@ -44,9 +48,15 @@ impl CDParser {
             // mmap,
             filepath,
             filename,
+            index: Vec::new(),
             crash_dump_sections: CrashDumpSections {
                 premable: HashMap::new(),
+                processes: HashMap::new(),
+                binaries: HashMap::new(),
+                heap: HashMap::new(),
+
             },
+
         })
     }
 
@@ -73,9 +83,9 @@ impl CDParser {
     }
 
     // need to list all the sections and their various counts, like unique counts for binaries, processes, etc
-    pub fn get_crash_dump_sections(&self) -> HashMap<String, String> {
+    // pub fn get_crash_dump_sections(&self) -> HashMap<String, String> {
         
-    }
+    // }
     
     fn split_path_and_filename(filepath: &str) -> Result<(PathBuf, String), io::Error> {
         let path = Path::new(filepath);

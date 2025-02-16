@@ -3,7 +3,7 @@ use std::io;
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::{
-    app::{App, AppResult},
+    app::{App, AppResult, AppState},
     event::{Event, EventHandler},
     handler::handle_key_events,
     tui::Tui,
@@ -14,8 +14,10 @@ pub mod event;
 pub mod handler;
 pub mod tui;
 pub mod ui;
+mod parser;
 
 use clap::Parser;
+use parser::CDParser;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -35,9 +37,13 @@ struct Args {
 async fn main() -> AppResult<()> {
     let args = Args::parse();
     
+    println!("Creating parser");
+    let mut parser = CDParser::new(&args.filepath).unwrap();
+    let idx = parser.parse()?;
+
     if args.action == "tui" {
         // Create an application.
-        let mut app = App::new();
+        let mut app = App::new(idx);
 
         // Initialize the terminal user interface.
         let backend = CrosstermBackend::new(io::stdout());
@@ -47,7 +53,7 @@ async fn main() -> AppResult<()> {
         tui.init()?;
 
         // Start the main loop.
-        while app.running {
+        while app.state == AppState::Running {
             // Render the user interface.
             tui.draw(&mut app)?;
             // Handle events.
