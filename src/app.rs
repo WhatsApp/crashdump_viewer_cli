@@ -1,15 +1,15 @@
-use std::error;
-use std::collections::HashMap;
 use color_eyre::Result;
 use ratatui::{
     buffer::Buffer,
-    style::{palette::tailwind, Color, Stylize},
-    widgets::{Block, Padding, Paragraph, Tabs, Widget, List, ListDirection},
-    text::Line,
     layout::{Constraint, Layout, Rect},
+    style::{palette::tailwind, Color, Style, Stylize},
     symbols,
+    text::Line,
+    widgets::{Block, List, ListDirection, ListItem, ListState, Padding, Paragraph, Tabs, Widget},
 };
-use strum::{IntoEnumIterator};
+use std::collections::HashMap;
+use std::error;
+use strum::IntoEnumIterator;
 use strum_macros::{Display, EnumIter, FromRepr};
 
 /// Application result type.
@@ -26,16 +26,17 @@ pub struct App {
     pub general_info: HashMap<String, String>,
     pub process_info: HashMap<String, String>,
     pub binary_info: HashMap<String, String>,
+    pub list_states: HashMap<SelectedTab, ListState>,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
     #[default]
     Running,
-    Quitting
+    Quitting,
 }
 
-#[derive(Default, Clone, Copy, Display, FromRepr, EnumIter)]
+#[derive(Default, Clone, Copy, Display, FromRepr, EnumIter, PartialEq, Eq, Hash)]
 enum SelectedTab {
     #[default]
     #[strum(to_string = "General Information")]
@@ -45,7 +46,7 @@ enum SelectedTab {
     #[strum(to_string = "Process Information")]
     Process,
     #[strum(to_string = "Binary Information")]
-    Binary
+    Binary,
 }
 
 impl Default for App {
@@ -56,8 +57,11 @@ impl Default for App {
             index: vec![],
             general_info: HashMap::new(),
             process_info: HashMap::new(),
-            binary_info: HashMap::new(),   
+            binary_info: HashMap::new(),
             header: "ERL CRASH DUMP VIEWER".to_string(),
+            list_states: HashMap::from_iter(
+                SelectedTab::iter().map(|tab| (tab, ListState::default())),
+            ),
         }
     }
 }
@@ -67,6 +71,13 @@ impl App {
     pub fn new(idx: Vec<String>) -> Self {
         let mut ret = Self::default();
         ret.index = idx;
+
+        if let Some(state) = ret.list_states.get_mut(&SelectedTab::Index) {
+            if !ret.index.is_empty() {
+                state.select(Some(0));
+            }
+        }
+
         ret
     }
 
@@ -85,7 +96,6 @@ impl App {
     pub fn prev_tab(&mut self) {
         self.selected_tab = self.selected_tab.previous()
     }
-
 }
 
 // Separated because this is the UI code. We need this here in order to render stuff *within* App state
@@ -101,7 +111,6 @@ impl App {
             .divider(" ")
             .render(area, buf);
     }
-
 }
 
 impl Widget for &mut App {
@@ -124,7 +133,6 @@ impl Widget for &mut App {
         render_footer(footer_area, buf);
     }
 }
-
 
 impl SelectedTab {
     /// Get the previous tab, if there is no previous tab return the current tab.
@@ -170,12 +178,20 @@ impl SelectedTab {
     }
 
     fn render_index(self, area: Rect, buf: &mut Buffer, app: &App) {
-        List::new(app.index.clone())
-            .block(Block::bordered().title("List"))
+        let index_list_state = app.list_states.get(&SelectedTab::Index).unwrap();
+        let list_items: Vec<ListItem> = app
+            .index
+            .iter()
+            .map(|i| ListItem::new::<&str>(i.as_ref()))
+            .collect();
+
+        List::new(list_items)
+            .block(Block::bordered().title("Index"))
             .highlight_symbol(">>")
             .repeat_highlight_symbol(true)
             .direction(ListDirection::BottomToTop)
-            .render(area, buf);
+            .highlight_style(Style::default().bg(Color::LightGreen))
+            .render(area, buf, index_list_state.clone());
     }
 
     fn render_process(self, area: Rect, buf: &mut Buffer, app: &App) {

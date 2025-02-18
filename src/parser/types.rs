@@ -1,8 +1,49 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time::SystemTime;
-use serde::de::{self, Deserializer, Visitor};
 use std::fmt;
-use serde::Deserialize;
+use std::str::FromStr;
+use std::time::SystemTime;
+
+pub const TAG_PREAMBLE: &[u8] = b"erl_crash_dump";
+pub const TAG_ABORT: &[u8] = b"abort";
+pub const TAG_ALLOCATED_AREAS: &[u8] = b"allocated_areas";
+pub const TAG_ALLOCATOR: &[u8] = b"allocator";
+pub const TAG_ATOMS: &[u8] = b"atoms";
+pub const TAG_BINARY: &[u8] = b"binary";
+pub const TAG_DIRTY_CPU_SCHEDULER: &[u8] = b"dirty_cpu_scheduler";
+pub const TAG_DIRTY_CPU_RUN_QUEUE: &[u8] = b"dirty_cpu_run_queue";
+pub const TAG_DIRTY_IO_SCHEDULER: &[u8] = b"dirty_io_scheduler";
+pub const TAG_DIRTY_IO_RUN_QUEUE: &[u8] = b"dirty_io_run_queue";
+pub const TAG_ENDE: &[u8] = b"ende";
+pub const TAG_ERL_CRASH_DUMP: &[u8] = b"erl_crash_dump";
+pub const TAG_ETS: &[u8] = b"ets";
+pub const TAG_FUN: &[u8] = b"fun";
+pub const TAG_HASH_TABLE: &[u8] = b"hash_table";
+pub const TAG_HIDDEN_NODE: &[u8] = b"hidden_node";
+pub const TAG_INDEX_TABLE: &[u8] = b"index_table";
+pub const TAG_INSTR_DATA: &[u8] = b"instr_data";
+pub const TAG_INTERNAL_ETS: &[u8] = b"internal_ets";
+pub const TAG_LITERALS: &[u8] = b"literals";
+pub const TAG_LOADED_MODULES: &[u8] = b"loaded_modules";
+pub const TAG_MEMORY: &[u8] = b"memory";
+pub const TAG_MEMORY_MAP: &[u8] = b"memory_map";
+pub const TAG_MEMORY_STATUS: &[u8] = b"memory_status";
+pub const TAG_MOD: &[u8] = b"mod";
+pub const TAG_NO_DISTRIBUTION: &[u8] = b"no_distribution";
+pub const TAG_NODE: &[u8] = b"node";
+pub const TAG_NOT_CONNECTED: &[u8] = b"not_connected";
+pub const TAG_OLD_INSTR_DATA: &[u8] = b"old_instr_data";
+pub const TAG_PERSISTENT_TERMS: &[u8] = b"persistent_terms";
+pub const TAG_PORT: &[u8] = b"port";
+pub const TAG_PROC: &[u8] = b"proc";
+pub const TAG_PROC_DICTIONARY: &[u8] = b"proc_dictionary";
+pub const TAG_PROC_HEAP: &[u8] = b"proc_heap";
+pub const TAG_PROC_MESSAGES: &[u8] = b"proc_messages";
+pub const TAG_PROC_STACK: &[u8] = b"proc_stack";
+pub const TAG_SCHEDULER: &[u8] = b"scheduler";
+pub const TAG_TIMER: &[u8] = b"timer";
+pub const TAG_VISIBLE_NODE: &[u8] = b"visible_node";
+pub const TAG_END: &[u8] = b"end";
 
 // Section tags - lifted from https://github.com/erlang/otp/blob/master/lib/observer/src/crashdump_viewer.erl#L121
 #[derive(Debug)]
@@ -49,33 +90,184 @@ pub enum Tag {
     End,
 }
 
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub enum DumpSection {
+    Preamble(Preamble),
+    // Allocator(AllocatorInfo),
+    // Node(NodeInfo),
+    // Proc(ProcInfo),
+    // ProcHeap(ProcHeapInfo),
+    // ProcStack(ProcStackInfo),
+    // Scheduler(SchedulerInfo),
+    // Ets(EtsInfo),
+    // Timer(TimerInfo),
+    // Port(PortInfo),
+    // Memory(MemoryInfo),
+    // Atoms(Vec<String>),
+    // PersistentTerms(PersistentTermInfo),
+    // LoadedModules(LoadedModules),
+    // Modules(ModuleInfo),
+    Generic(GenericSection),
+}
 
-// #[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct GenericSection {
+    tag: String,
+    id: Option<String>,
+    data: HashMap<String, String>, // For key-value pairs
+    //   items: Vec<HashMap<String, String>>, // For lists of items
+    raw_lines: Vec<String>, // For raw lines without key-value pairs
+}
+
+impl FromStr for GenericSection {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut lines = s.lines();
+
+        // Parse the header line
+        let header_line = lines.next().ok_or("Missing header line".to_string())?;
+        if !header_line.starts_with("=") {
+            return Err("Invalid header format".to_string());
+        }
+
+        let header_parts: Vec<&str> = header_line[1..].split(":").collect();
+        let tag = header_parts.get(0).unwrap().trim().to_string();
+        let id = header_parts.get(1).map(|s| s.trim().to_string());
+
+        let mut data = HashMap::new();
+        //    let mut items = Vec::new();
+        let mut raw_lines = Vec::new();
+
+        for line in lines {
+            let parts: Vec<&str> = line.splitn(2, ":").collect();
+            if parts.len() == 2 {
+                // key-value pair
+                let key = parts[0].trim().to_string();
+                let value = parts[1].trim().to_string();
+
+                data.insert(key, value);
+            } else if line.starts_with("0x") {
+                // Special handling for lines starting with "0x"
+                // (e.g., in the Stack Trace section)
+                raw_lines.push(line.to_string());
+            } else {
+                // raw line
+                raw_lines.push(line.to_string());
+            }
+        }
+
+        Ok(GenericSection {
+            tag,
+            id,
+            data,
+            //       items,
+            raw_lines,
+        })
+    }
+}
+
+fn parse_section(s: &str) -> Result<DumpSection, String> {
+    let section = GenericSection::from_str(s)?;
+    let id = section.id.clone().unwrap_or_else(|| "".to_string());
+    let raw_lines = &section.raw_lines;
+    let data = &section.data;
+
+    let section = match section.tag.as_str() {
+        "preamble" => {
+            let preamble = Preamble {
+                version: id,
+                time: raw_lines[0].clone(),
+                slogan: data["Slogan"].parse().unwrap(),
+                erts: data["System version"].parse().unwrap(),
+                taints: data["Taints"].parse().unwrap(),
+                atom_count: data["Atom count"].parse::<i64>().unwrap(),
+            };
+            DumpSection::Preamble(preamble)
+        }
+
+        _ => DumpSection::Generic(section),
+    };
+    Ok(section)
+}
+
+#[derive(Debug, PartialEq)] // Added PartialEq for comparison in tests if needed
+pub struct IndexRow {
+    r#type: String, // Use r#type to avoid keyword conflict
+    id: Option<String>,
+    start: String,
+    length: String,
+}
+
+#[derive(Debug)]
+pub enum InfoOrIndex<T> {
+    Index(IndexRow), // Now Index holds IndexRow
+    Info(T),
+}
+
+// #[derive(Debug)]
 pub struct CrashDump {
     pub preamble: Preamble,
     pub memory: MemoryInfo,
-    pub allocators: Vec<AllocatorInfo>,
-    pub nodes: Vec<NodeInfo>,
-    pub processes: HashMap<String, ProcInfo>,
-    pub processes_heap: HashMap<String, ProcHeapInfo>,
-    pub processes_stack: HashMap<String, ProcStackInfo>,
-    pub ports: HashMap<String, PortInfo>,
-    pub schedulers: Vec<SchedulerInfo>,
-    pub ets: Vec<EtsInfo>,
-    pub timers: Vec<TimerInfo>,
-    pub atoms: Vec<String>,
-    pub loaded_modules: Vec<LoadedModules>,
-    pub persistent_terms: Vec<PersistentTermInfo>,
+    pub allocators: Vec<InfoOrIndex<AllocatorInfo>>,
+    pub nodes: Vec<InfoOrIndex<NodeInfo>>,
+    pub processes: HashMap<String, InfoOrIndex<ProcInfo>>,
+    pub processes_heap: HashMap<String, InfoOrIndex<ProcHeapInfo>>,
+    pub processes_stack: HashMap<String, InfoOrIndex<ProcStackInfo>>,
+    pub ports: HashMap<String, InfoOrIndex<PortInfo>>,
+    pub schedulers: Vec<InfoOrIndex<SchedulerInfo>>,
+    pub ets: Vec<InfoOrIndex<EtsInfo>>,
+    pub timers: Vec<InfoOrIndex<TimerInfo>>,
+    pub atoms: Vec<InfoOrIndex<String>>,
+    pub loaded_modules: Vec<InfoOrIndex<LoadedModules>>,
+    pub persistent_terms: Vec<InfoOrIndex<PersistentTermInfo>>,
     pub raw_sections: HashMap<String, Vec<u8>>,
 }
-// #[derive(Debug, Deserialize)]
+
+impl CrashDump {
+    pub fn new() -> CrashDump {
+        CrashDump {
+            preamble: Preamble {
+                version: "".to_string(),
+                time: "".to_string(),
+                slogan: "".to_string(),
+                erts: "".to_string(),
+                taints: "".to_string(),
+                atom_count: 0,
+            },
+            memory: MemoryInfo {
+                total: 0,
+                processes: Processes { total: 0, used: 0 },
+                system: 0,
+                atom: Atom { total: 0, used: 0 },
+                binary: 0,
+                code: 0,
+                ets: 0,
+            },
+            allocators: vec![],
+            nodes: vec![],
+            processes: HashMap::new(),
+            processes_heap: HashMap::new(),
+            processes_stack: HashMap::new(),
+            ports: HashMap::new(),
+            schedulers: vec![],
+            ets: vec![],
+            timers: vec![],
+            atoms: vec![],
+            loaded_modules: vec![],
+            persistent_terms: vec![],
+            raw_sections: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct Preamble {
     pub version: String,
-    pub time: SystemTime,
+    pub time: String,
     pub slogan: String,
-    pub otp_release: String,
-    pub erts: ERTS,
-    pub taints: Vec<String>,
+    pub erts: String,
+    pub taints: String,
     pub atom_count: i64,
 }
 // #[derive(Debug, Deserialize)]
