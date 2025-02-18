@@ -37,7 +37,7 @@ pub enum AppState {
 }
 
 #[derive(Default, Clone, Copy, Display, FromRepr, EnumIter, PartialEq, Eq, Hash)]
-enum SelectedTab {
+pub enum SelectedTab {
     #[default]
     #[strum(to_string = "General Information")]
     General,
@@ -191,7 +191,7 @@ impl SelectedTab {
             .repeat_highlight_symbol(true)
             .direction(ListDirection::BottomToTop)
             .highlight_style(Style::default().bg(Color::LightGreen))
-            .render(area, buf, index_list_state.clone());
+            .render(area, buf);
     }
 
     fn render_process(self, area: Rect, buf: &mut Buffer, app: &App) {
