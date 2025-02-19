@@ -14,8 +14,10 @@ docker run --name ejabberd \
 Running
 ```
 cargo run ./sample_dumps/erl_crash_simple.dump
+# or
+cargo run ./sample_dumps/erl_crash_20250105-004018.dump
 ```
 
-should display
-
-![./example.png](./example.png)
+# Screenshots
+![](./screenshots/general_view.png)
+![](./screenshots/process_view.png)
