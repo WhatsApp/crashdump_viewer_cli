@@ -33,16 +33,6 @@ impl IndexSink {
     }
 }
 
-#[derive(Debug, PartialEq)]
-struct IndexRow {
-    r#type: String, // Use r#type to avoid keyword conflict
-    id: Option<String>,
-    start: String,
-    length: String,
-}
-
-type IndexMap = HashMap<Tag, HashMap<Option<String>, IndexRow>>;
-
 impl Sink for IndexSink {
     type Error = io::Error;
 
@@ -56,7 +46,6 @@ impl Sink for IndexSink {
                 .unwrap_or(match_bytes.len() - 1);
 
             let tag = &match_bytes[1..tag_end];
-            println!("tag: {:?}", std::str::from_utf8(tag).unwrap());
             let tag_enum = match tag {
                 t if t == TAG_PREAMBLE => Tag::Preamble,
                 t if t == TAG_ABORT => Tag::Abort,
@@ -137,67 +126,72 @@ impl CDParser {
     // at the end there will be a big struct that contains all the sections
     // enrich as needed
 
-    pub fn get_index(&self) -> Result<Vec<String>, io::Error> {
+    pub fn build_index(&self) -> Result<IndexMap, io::Error> {
         let matcher = RegexMatcher::new(r"^=.*").unwrap();
-
         let mut searcher = SearcherBuilder::new()
             .binary_detection(BinaryDetection::quit(b'\x00'))
             .line_number(false)
             .build();
-
         let mut sink = IndexSink::new();
-
-        //let mut contents = Vec::new();
         let realpath = self.filepath.join(&self.filename);
-
-        searcher.search_path(&matcher, &realpath, &mut sink);
-        // let vec_of_strings: Vec<String> = sink
-        //     .matches
-        //     .iter()
-        //     .map(|tuple| format!("{:?}", tuple))
-        //     .collect();
-
+        searcher.search_path(&matcher, &realpath, &mut sink)?;
         let file_size = std::fs::metadata(&realpath)?.len();
+        let mut index_map: IndexMap = HashMap::new();
+        for window in sink.matches.windows(2) {
+            let (tag1, tag_id, offset1) = &window[0];
+            let (_, _, offset2) = window[1];
+            let index_row = IndexRow {
+                r#type: format!("{:?}", tag1),
+                id: tag_id.clone(),
+                start: offset1.to_string(),
+                length: (offset2 - offset1).to_string(),
+            };
+            index_map
+                .entry(*tag1)
+                .or_insert_with(HashMap::new)
+                .insert(tag_id.clone(), index_row);
+        }
+        if let Some(last_match) = sink.matches.last() {
+            let (last_tag, last_id, last_offset) = last_match;
+            let index_row = IndexRow {
+                r#type: format!("{:?}", last_tag),
+                id: last_id.clone(),
+                start: last_offset.to_string(),
+                length: (file_size - last_offset).to_string(),
+            };
+            index_map
+                .entry(*last_tag)
+                .or_insert_with(HashMap::new)
+                .insert(last_id.clone(), index_row);
+        }
+        Ok(index_map)
+    }
 
-        // as we parse through and generate the offsets, put them into the hashmap for CrashDump, noting that they could be either a index row struct, which needs to be replaced later, or a value struct.
-        let vec_of_strings: Vec<String> = sink
-            .matches
-            .windows(2)
-            .map(|w| {
-                let (tag1, tag_id, offset1) = &w[0];
-                let (_, _, offset2) = w[1];
-
-                format!(
+    pub fn format_index(index_map: &IndexMap) -> Vec<String> {
+        let mut formatted_index = Vec::new();
+        for (tag, inner_map) in index_map {
+            for (id, index_row) in inner_map {
+                formatted_index.push(format!(
                     "{:?}:{} {} {}",
-                    tag1,
-                    tag_id.as_deref().unwrap_or_default(),
-                    offset1,
-                    offset2 - offset1
-                )
-            })
-            .chain(std::iter::once(format!(
-                "{:?} {} {}",
-                sink.matches.last().unwrap().0,
-                sink.matches.last().unwrap().2,
-                file_size - sink.matches.last().unwrap().2
-            )))
-            .collect();
+                    tag,
+                    id.as_deref().unwrap_or_default(),
+                    index_row.start,
+                    index_row.length
+                ));
+            }
+        }
+        formatted_index
+    }
 
-        Ok(vec_of_strings)
-        //println!("{:?}", sink.matches);
-
-        // let mut file = File::open(realpath)?;
-        // file.read_to_end(&mut contents)?;
-        // let lines: Vec<&str> = contents.split(|c| *c == b'\n').map(|s| std::str::from_utf8(s).unwrap()).collect();
-
-        // Ok(lines.par_iter().enumerate().filter_map(|(index, line)| {
-        //     if line.starts_with('=') {
-        //         //Some((index, line.to_string()))
-        //         Some(format!("{} : {}", index, line.to_string()))
-        //     } else {
-        //         None
-        //     }
-        // }).collect())
+    // after building the IndexMap, we can iterate through it and deserialize into the CrashDump struct
+    pub fn parse(&mut self) -> Result<(), io::Error> {
+        let index_map = self.build_index()?;
+        for (tag, inner_map) in index_map {
+            for (id, index_row) in inner_map {
+                
+            }
+        }
+        Ok(())
     }
 
     // returns the slogan, crash time, and other general information
@@ -205,19 +199,10 @@ impl CDParser {
         self.crash_dump.preamble.clone()
     }
 
-    // need to list all the sections and their various counts, like unique counts for binaries, processes, etc
-    // pub fn get_crash_dump_sections(&self) -> HashMap<String, String> {
-
-    // }
-
     fn split_path_and_filename(filepath: &str) -> Result<(PathBuf, String), io::Error> {
         let path = Path::new(filepath);
         let filepath = path.parent().unwrap_or(Path::new("."));
         let filename = path.file_name().unwrap_or(OsStr::new("")).to_string_lossy();
         Ok((filepath.to_path_buf(), filename.into_owned()))
     }
-
-    // fn get_json() -> String {
-
-    // }
 }

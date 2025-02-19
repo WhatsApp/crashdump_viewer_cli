@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use std::time::SystemTime;
+use std::io::{self, Read, Seek, SeekFrom};
+use std::fs::File;
+
 
 pub const TAG_PREAMBLE: &[u8] = b"erl_crash_dump";
 pub const TAG_ABORT: &[u8] = b"abort";
@@ -46,7 +49,7 @@ pub const TAG_VISIBLE_NODE: &[u8] = b"visible_node";
 pub const TAG_END: &[u8] = b"end";
 
 // Section tags - lifted from https://github.com/erlang/otp/blob/master/lib/observer/src/crashdump_viewer.erl#L121
-#[derive(Debug)]
+#[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
 pub enum Tag {
     Preamble,
     Abort,
@@ -191,13 +194,15 @@ fn parse_section(s: &str) -> Result<DumpSection, String> {
     Ok(section)
 }
 
-#[derive(Debug, PartialEq)] // Added PartialEq for comparison in tests if needed
+#[derive(Debug, PartialEq, Clone)] // Added PartialEq for comparison in tests if needed
 pub struct IndexRow {
-    r#type: String, // Use r#type to avoid keyword conflict
-    id: Option<String>,
-    start: String,
-    length: String,
+    pub r#type: String, // Use r#type to avoid keyword conflict
+    pub id: Option<String>,
+    pub start: String,
+    pub length: String,
 }
+
+pub type IndexMap = HashMap<Tag, HashMap<Option<String>, IndexRow>>;
 
 #[derive(Debug)]
 pub enum InfoOrIndex<T> {
@@ -259,6 +264,39 @@ impl CrashDump {
             raw_sections: HashMap::new(),
         }
     }
+
+    pub fn from_index_map(index_map: &IndexMap, file_path: &str) -> io::Result<Self> {
+        let mut crash_dump = CrashDump::new();
+        // Open the file
+        let mut file = File::open(file_path)?;
+        for (tag, inner_map) in index_map {
+            for (id, index_row) in inner_map {
+                match tag {
+                    Tag::Preamble => {
+                        // Convert start and length to u64
+                        let start_offset: u64 = index_row.start.parse().unwrap_or(0);
+                        let length: u64 = index_row.length.parse().unwrap_or(0);
+                        // Seek to the start offset
+                        file.seek(SeekFrom::Start(start_offset))?;
+                        // Read the specified length of bytes
+                        let mut buffer = vec![0; length as usize];
+                        file.read_exact(&mut buffer)?;
+                        // Convert buffer to a string
+                        let contents = String::from_utf8_lossy(&buffer);
+                        // Parse the section
+                        if let Ok(DumpSection::Preamble(preamble)) = parse_section(&contents) {
+                            crash_dump.preamble = preamble;
+                        }
+                    }
+                    // Other tags can be handled similarly
+                    _ => {}
+                }
+            }
+        }
+        Ok(crash_dump)
+    }
+
+
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]

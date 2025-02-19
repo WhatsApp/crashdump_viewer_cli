@@ -5,12 +5,13 @@ use ratatui::{
     style::{palette::tailwind, Color, Style, Stylize},
     symbols,
     text::Line,
-    widgets::{Block, List, ListDirection, ListItem, ListState, Padding, Paragraph, Tabs, Widget},
+    widgets::{Block, List, ListDirection, ListItem, ListState, Padding, Paragraph, Tabs, Widget, StatefulWidget},
 };
 use std::collections::HashMap;
 use std::error;
 use strum::IntoEnumIterator;
 use strum_macros::{Display, EnumIter, FromRepr};
+use crate::parser::*;
 
 /// Application result type.
 pub type AppResult<T> = std::result::Result<T, Box<dyn error::Error>>;
@@ -22,9 +23,16 @@ pub struct App {
     pub state: AppState,
     pub selected_tab: SelectedTab,
 
+    /// random stuff
     pub index: Vec<String>,
-    pub general_info: HashMap<String, String>,
-    pub process_info: HashMap<String, String>,
+
+    /// first page
+    pub general_info: String,
+
+    /// second page
+    pub process_info_list: Vec<String>,
+    
+    /// misc
     pub binary_info: HashMap<String, String>,
     pub list_states: HashMap<SelectedTab, ListState>,
 }
@@ -55,8 +63,8 @@ impl Default for App {
             state: AppState::Running,
             selected_tab: SelectedTab::General,
             index: vec![],
-            general_info: HashMap::new(),
-            process_info: HashMap::new(),
+            general_info: "".to_string(),
+            process_info_list: vec![],
             binary_info: HashMap::new(),
             header: "ERL CRASH DUMP VIEWER".to_string(),
             list_states: HashMap::from_iter(
@@ -68,9 +76,14 @@ impl Default for App {
 
 impl App {
     /// Constructs a new instance of [`App`].
-    pub fn new(idx: Vec<String>) -> Self {
+    pub fn new(idx: IndexMap) -> Self {
         let mut ret = Self::default();
-        ret.index = idx;
+
+        // store the index
+        let idxStr = crate::parser::CDParser::format_index(&idx);
+        ret.index = idxStr;
+
+        // set the process information
 
         if let Some(state) = ret.list_states.get_mut(&SelectedTab::Index) {
             if !ret.index.is_empty() {
@@ -177,27 +190,40 @@ impl SelectedTab {
             .render(area, buf);
     }
 
-    fn render_index(self, area: Rect, buf: &mut Buffer, app: &App) {
-        let index_list_state = app.list_states.get(&SelectedTab::Index).unwrap();
+    fn render_index(self, area: Rect, buf: &mut Buffer, app: &mut App) {
+        let index_list_state = app.list_states.get_mut(&SelectedTab::Index).unwrap();
         let list_items: Vec<ListItem> = app
             .index
             .iter()
             .map(|i| ListItem::new::<&str>(i.as_ref()))
             .collect();
 
-        List::new(list_items)
-            .block(Block::bordered().title("Index"))
+        let binding = SelectedTab::Index.to_string();
+        let list = List::new(list_items)
+            .block(Block::bordered().title(binding.as_str()))
             .highlight_symbol(">>")
             .repeat_highlight_symbol(true)
-            .direction(ListDirection::BottomToTop)
-            .highlight_style(Style::default().bg(Color::LightGreen))
-            .render(area, buf);
+            .highlight_style(Style::default().bg(Color::Blue));
+
+        StatefulWidget::render(list, area, buf, index_list_state);
     }
 
-    fn render_process(self, area: Rect, buf: &mut Buffer, app: &App) {
-        Paragraph::new("Welcome to the Ratatui tabs example!")
-            .block(self.block())
-            .render(area, buf);
+    fn render_process(self, area: Rect, buf: &mut Buffer, app: &mut App) {
+        let index_list_state = app.list_states.get_mut(&SelectedTab::Process).unwrap();
+        let list_items: Vec<ListItem> = app
+            .process_info_list
+            .iter()
+            .map(|i| ListItem::new::<&str>(i.as_ref()))
+            .collect();
+
+        let binding = SelectedTab::Process.to_string();
+        let list = List::new(list_items)
+            .block(Block::bordered().title(binding.as_str()))
+            .highlight_symbol(">>")
+            .repeat_highlight_symbol(true)
+            .highlight_style(Style::default().bg(Color::Blue));
+
+        StatefulWidget::render(list, area, buf, index_list_state);
     }
 
     fn render_binary(self, area: Rect, buf: &mut Buffer, app: &App) {
