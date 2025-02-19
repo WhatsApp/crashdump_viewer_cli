@@ -11,7 +11,6 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 
-
 struct IndexSink {
     matches: Vec<(Tag, Option<String>, u64)>,
 }
@@ -47,7 +46,6 @@ impl Sink for IndexSink {
             } else {
                 None
             };
-
 
             self.matches.push((tag_enum, tag_id_string, byte_offset));
         }
@@ -152,7 +150,7 @@ impl CDParser {
                         .push(index_row);
                 }
             }
-        }    
+        }
         Ok(index_map)
     }
 
@@ -164,10 +162,7 @@ impl CDParser {
                     for (id, index_row) in inner_map {
                         formatted_index.push(format!(
                             "{:?}:{} {} {}",
-                            tag,
-                            id,
-                            index_row.start,
-                            index_row.length
+                            tag, id, index_row.start, index_row.length
                         ));
                     }
                 }
@@ -175,14 +170,11 @@ impl CDParser {
                     for index_row in inner_list {
                         formatted_index.push(format!(
                             "{:?} {} {}",
-                            tag,
-                            index_row.start,
-                            index_row.length
+                            tag, index_row.start, index_row.length
                         ));
                     }
                 }
             }
-
         }
         formatted_index
     }
@@ -191,7 +183,7 @@ impl CDParser {
     pub fn parse(&mut self) -> io::Result<CrashDump> {
         let index_map = self.build_index()?;
         let crash_dump = CrashDump::from_index_map(&index_map, &self.filepath);
-        
+
         crash_dump
     }
 

@@ -12,9 +12,9 @@ use crate::{
 pub mod app;
 pub mod event;
 pub mod handler;
+mod parser;
 pub mod tui;
 pub mod ui;
-mod parser;
 
 use clap::Parser;
 #[derive(Parser, Debug)]
@@ -28,14 +28,12 @@ struct Args {
 
     /// Path to the crash dump
     #[arg(required = true)]
-    filepath: String
+    filepath: String,
 }
 
 #[tokio::main]
 async fn main() -> AppResult<()> {
     let args = Args::parse();
-    
-
 
     if args.action == "tui" {
         // Create an application.
@@ -63,11 +61,9 @@ async fn main() -> AppResult<()> {
 
         // Exit the user interface.
         tui.exit()?;
-    }
-    else if args.action == "json" {
+    } else if args.action == "json" {
         println!("JSON representation of the app state");
-    }
-    else {
+    } else {
         println!("Invalid action: {}", args.action);
     }
 

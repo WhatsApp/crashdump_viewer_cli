@@ -1,18 +1,21 @@
+use crate::parser::CrashDump;
+use crate::parser::*;
 use color_eyre::Result;
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect, Alignment, Direction},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{palette::tailwind, Color, Style, Stylize},
     symbols,
     text::Line,
-    widgets::{Block, List, ListDirection, ListItem, ListState, Padding, Paragraph, Tabs, Widget, StatefulWidget},
+    widgets::{
+        Block, List, ListDirection, ListItem, ListState, Padding, Paragraph, StatefulWidget, Tabs,
+        Widget,
+    },
 };
 use std::collections::HashMap;
 use std::error;
 use strum::IntoEnumIterator;
 use strum_macros::{Display, EnumIter, FromRepr};
-use crate::parser::*;
-use crate::parser::CrashDump;
 
 /// Application result type.
 pub type AppResult<T> = std::result::Result<T, Box<dyn error::Error>>;
@@ -29,13 +32,10 @@ pub struct App {
     pub filepath: String,
     pub crash_dump: types::CrashDump,
     pub index_map: IndexMap,
-
     /// process information list
-    pub process_info_list: Vec<String>,
-    /// random stuff
-    pub index: Vec<String>,
-    pub list_states: HashMap<SelectedTab, ListState>,
+    pub tab_lists: HashMap<SelectedTab, Vec<String>>,
 
+    pub list_states: HashMap<SelectedTab, ListState>,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -66,10 +66,9 @@ impl Default for App {
             parser: parser::CDParser::new("").unwrap(),
             filepath: "".to_string(),
             crash_dump: types::CrashDump::new(),
-            index: vec![],
             index_map: IndexMap::new(),
             header: "ERL CRASH DUMP VIEWER".to_string(),
-            process_info_list: vec![],
+            tab_lists: HashMap::from_iter(SelectedTab::iter().map(|tab| (tab, vec![]))),
             list_states: HashMap::from_iter(
                 SelectedTab::iter().map(|tab| (tab, ListState::default())),
             ),
@@ -82,22 +81,37 @@ impl App {
     pub fn new(filepath: String) -> Self {
         let mut parser = parser::CDParser::new(&filepath).unwrap();
         let idx = parser.build_index().unwrap();
-        
+
         let mut ret = Self::default();
         ret.index_map = idx.clone();
-        
+
         // store the index
         let idx_str = parser::CDParser::format_index(&idx);
-        ret.index = idx_str;
+        ret.tab_lists.get_mut(&SelectedTab::Index).map(|val| {
+            *val = idx_str;
+        });
 
         let crash_dump = parser.parse().unwrap();
         ret.crash_dump = crash_dump;
 
         // set the process information
-        ret.process_info_list = ret.crash_dump.processes.keys().cloned().collect::<Vec<String>>();
+        ret.tab_lists.get_mut(&SelectedTab::Process).map(|val| {
+            *val = ret
+                .crash_dump
+                .processes
+                .keys()
+                .cloned()
+                .collect::<Vec<String>>();
+        });
 
         if let Some(state) = ret.list_states.get_mut(&SelectedTab::Index) {
-            if !ret.index.is_empty() {
+            if !ret.tab_lists[&SelectedTab::Index].is_empty() {
+                state.select(Some(0));
+            }
+        }
+
+        if let Some(state) = ret.list_states.get_mut(&SelectedTab::Process) {
+            if !ret.tab_lists[&SelectedTab::Process].is_empty() {
                 state.select(Some(0));
             }
         }
@@ -203,20 +217,22 @@ impl SelectedTab {
 
         let memory_info_text = app.crash_dump.memory.format();
 
-        let general_info_text = format!("{}\n\n{}\n\nProcess Count: {}\nETS Tables: {}\nFuns: {}", preamble_text, memory_info_text, process_count, ets_count, fn_count);
-        
+        let general_info_text = format!(
+            "{}\n\n{}\n\nProcess Count: {}\nETS Tables: {}\nFuns: {}",
+            preamble_text, memory_info_text, process_count, ets_count, fn_count
+        );
+
         let paragraph = Paragraph::new(general_info_text)
-        .block(Block::bordered().title("General Information"))
-        .style(Style::default().fg(Color::White))
-        .alignment(Alignment::Left);
+            .block(Block::bordered().title("General Information"))
+            .style(Style::default().fg(Color::White))
+            .alignment(Alignment::Left);
 
         Widget::render(&paragraph, area, buf);
     }
 
     fn render_index(self, area: Rect, buf: &mut Buffer, app: &mut App) {
         let index_list_state = app.list_states.get_mut(&SelectedTab::Index).unwrap();
-        let list_items: Vec<ListItem> = app
-            .index
+        let list_items: Vec<ListItem> = app.tab_lists[&SelectedTab::Index]
             .iter()
             .map(|i| ListItem::new::<&str>(i.as_ref()))
             .collect();
@@ -234,34 +250,26 @@ impl SelectedTab {
     fn render_process(self, area: Rect, buf: &mut Buffer, app: &mut App) {
         let outer_layout = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints(vec![
-                Constraint::Percentage(50),
-                Constraint::Percentage(50)
-            ])
+            .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
 
         // split the second side into the info side
         let inner_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![
-                Constraint::Percentage(25),
-                Constraint::Percentage(75)
-            ])
+            .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
             .split(outer_layout[1]);
-
 
         // hashmap is of the form <PID>:ProcessInfo
 
-        let index_list_state = app.list_states.get_mut(&SelectedTab::Process).unwrap();
-        let list_items: Vec<ListItem> = app
-            .process_info_list
+        let process_list_state = app.list_states.get_mut(&SelectedTab::Process).unwrap();
+        let list_items: Vec<ListItem> = app.tab_lists[&SelectedTab::Process]
             .iter()
             .map(|i| ListItem::new::<&str>(i.as_ref()))
             .collect();
 
-        let selected_item = index_list_state.selected().unwrap_or(0);
-        let selected_pid = app.process_info_list[selected_item].clone();
-        let selected_process = app.crash_dump.processes.get(&selected_pid).unwrap();
+        let selected_item = process_list_state.selected().unwrap_or(0);
+        let selected_pid = &app.tab_lists[&SelectedTab::Process][selected_item];
+        let selected_process = app.crash_dump.processes.get(selected_pid).unwrap();
 
         let binding = SelectedTab::Process.to_string();
         let list = List::new(list_items)
@@ -270,26 +278,23 @@ impl SelectedTab {
             .repeat_highlight_symbol(true)
             .highlight_style(Style::default().bg(Color::Blue));
 
-        
         let process_info_text = match selected_process {
             InfoOrIndex::Info(proc_info) => {
                 // Call the `format` method on the `ProcInfo` instance
                 proc_info.format()
-            },
+            }
             InfoOrIndex::Index(_) => unreachable!(),
         };
-            
+
         let detail_block = Paragraph::new(process_info_text)
-        .block(Block::bordered().title("Process Details"))
-        .style(Style::default().fg(Color::White))
-        .alignment(Alignment::Left);
-        
+            .block(Block::bordered().title("Process Details"))
+            .style(Style::default().fg(Color::White))
+            .alignment(Alignment::Left);
 
         // render the list
-        StatefulWidget::render(list, outer_layout[0], buf, index_list_state);
-
         Widget::render(&Paragraph::new("TEST 1"), inner_layout[0], buf);
         Widget::render(&detail_block, inner_layout[1], buf);
+        StatefulWidget::render(list, outer_layout[0], buf, process_list_state);
     }
 
     fn render_binary(self, area: Rect, buf: &mut Buffer, _app: &App) {

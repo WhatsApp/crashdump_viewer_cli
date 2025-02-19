@@ -1,10 +1,10 @@
 use ratatui::{
+    buffer::Buffer,
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style},
+    text::Line,
     widgets::{Block, BorderType, Paragraph, Widget},
     Frame,
-    text::Line,
-    layout::{Constraint, Layout, Rect, Alignment},
-    buffer::Buffer
 };
 
 use crate::app::App;
@@ -15,8 +15,5 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     // See the following resources:
     // - https://docs.rs/ratatui/latest/ratatui/widgets/index.html
     // - https://github.com/ratatui/ratatui/tree/master/examples
-    frame.render_widget(
-        app,
-        frame.area(),
-    )
+    frame.render_widget(app, frame.area())
 }

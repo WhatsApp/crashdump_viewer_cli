@@ -1,13 +1,13 @@
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
+use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::SystemTime;
-use std::io::{self, Read, Seek, SeekFrom};
-use std::fs::File;
-use std::borrow::Cow;
-use std::path::PathBuf;
-use regex::Regex;
 
 pub const TAG_PREAMBLE: &str = "erl_crash_dump";
 pub const TAG_ABORT: &str = "abort";
@@ -172,7 +172,7 @@ impl FromStr for GenericSection {
     }
 }
 
-pub fn string_tag_to_enum (tag: &str) -> Tag {
+pub fn string_tag_to_enum(tag: &str) -> Tag {
     let tag_enum = match tag {
         t if t == TAG_PREAMBLE => Tag::Preamble,
         t if t == TAG_ABORT => Tag::Abort,
@@ -239,28 +239,34 @@ fn parse_section(s: &str, id: Option<&str>) -> Result<DumpSection, String> {
             DumpSection::Preamble(preamble)
         }
 
-        Tag::Memory => {
-            DumpSection::Memory(MemoryInfo::from_generic_section(&data))
-        } 
+        Tag::Memory => DumpSection::Memory(MemoryInfo::from_generic_section(&data)),
 
         Tag::Proc => {
             // link_list might be optional or nonexistent
-            let link_list: Vec<String> = data["Link list"]
-                .trim_matches(|c| c == '[' || c == ']') // Remove the brackets
-                .split(", ") // Split by comma and space
-                .map(|s| s.to_string()) // Convert each &str to String
-                .collect();
-            let internal_state: Vec<String> = data["Internal State"]
-                .split(" | ") // Split by " | "
-                .map(|s| s.to_string()) // Convert each &str to String
-                .collect();
-    
-            println!("{:?}", data);
-    
+            // any of these fields might be optional or nonexistent
+
+            let link_list: Vec<String> = data
+                .get("Link list")
+                .map(|s| {
+                    s.trim_matches(|c| c == '[' || c == ']')
+                        .split(", ")
+                        .map(|s| s.to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let internal_state: Vec<String> = data
+                .get("Internal State")
+                .map(|s| s.split(" | ").map(|s| s.to_string()).collect())
+                .unwrap_or_default();
+
             let proc = ProcInfo {
                 pid: id,
                 state: data["State"].clone(),
-                name: data["Name"].clone(),
+                name: data
+                    .get("Name")
+                    .map(|s| s.clone())
+                    .unwrap_or("".to_string()),
                 spawned_as: data["Spawned as"].clone(),
                 spawned_by: data["Spawned by"].clone(),
                 message_queue_length: data["Message queue length"].parse::<i64>().unwrap(),
@@ -281,10 +287,10 @@ fn parse_section(s: &str, id: Option<&str>) -> Result<DumpSection, String> {
                 old_bin_vheap_unused: data["OldBinVHeap unused"].parse::<i64>().unwrap(),
                 //arity: raw_lines[0].split("=").last().unwrap().parse::<i64>().unwrap(),
                 arity: 0,
-                internal_state: internal_state,  
+                internal_state: internal_state,
             };
             DumpSection::Proc(proc)
-        }  
+        }
 
         _ => DumpSection::Generic(section),
     };
@@ -330,12 +336,11 @@ impl IndexValue {
     }
 }
 
-
 pub type IndexMap = HashMap<Tag, IndexValue>;
 
 #[derive(Debug)]
 pub enum InfoOrIndex<T> {
-    Index(IndexRow), 
+    Index(IndexRow),
     Info(T),
 }
 
@@ -398,16 +403,15 @@ impl CrashDump {
     pub fn load_section(index_row: &IndexRow, file: &mut File) -> io::Result<String> {
         let start_offset: u64 = index_row.start.parse().unwrap_or(0);
         let length: u64 = index_row.length.parse().unwrap_or(0);
-        
+
         file.seek(SeekFrom::Start(start_offset))?;
-        
+
         let mut buffer = vec![0; length as usize];
         file.read_exact(&mut buffer)?;
-        
+
         let contents = String::from_utf8_lossy(&buffer);
         Ok(contents.to_string())
     }
-    
 
     pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
         let mut crash_dump = CrashDump::new();
@@ -419,25 +423,33 @@ impl CrashDump {
                         match tag {
                             Tag::Preamble => {
                                 let contents = Self::load_section(&index_row, &mut file)?;
-                                if let Ok(DumpSection::Preamble(preamble)) = parse_section(&contents, Some(&id)) {
+                                if let Ok(DumpSection::Preamble(preamble)) =
+                                    parse_section(&contents, Some(&id))
+                                {
                                     crash_dump.preamble = preamble;
                                 }
                             }
                             Tag::Memory => {
                                 let contents = Self::load_section(&index_row, &mut file)?;
 
-                                if let Ok(DumpSection::Memory(memory)) = parse_section(&contents, Some(&id)) {
+                                if let Ok(DumpSection::Memory(memory)) =
+                                    parse_section(&contents, Some(&id))
+                                {
                                     crash_dump.memory = memory;
                                 }
                             }
 
                             Tag::Proc => {
                                 let contents = Self::load_section(&index_row, &mut file)?;
-                                if let Ok(DumpSection::Proc(proc)) = parse_section(&contents, Some(&id)) {
-                                    crash_dump.processes.insert(id.clone(), InfoOrIndex::Info(proc));
+                                if let Ok(DumpSection::Proc(proc)) =
+                                    parse_section(&contents, Some(&id))
+                                {
+                                    crash_dump
+                                        .processes
+                                        .insert(id.clone(), InfoOrIndex::Info(proc));
                                 }
                             }
-                            
+
                             _ => {}
                         }
                     }
@@ -454,10 +466,9 @@ impl CrashDump {
                             //     }
                             // }
                             _ => {}
-                        
                         }
                     }
-                }   
+                }
             }
         }
         Ok(crash_dump)
@@ -616,7 +627,7 @@ impl ProcInfo {
 Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\nProgram Counter:
 {:#?}\nInternal State: {:#?}",
             self.pid, self.state, self.name, self.spawned_as, self.spawned_by, self.message_queue_length, self.number_of_heap_fragments, self.heap_fragment_data, self.link_list, self.reductions, self.stack_heap, self.old_heap, self.heap_unused, self.old_heap_unused, self.bin_vheap, self.old_bin_vheap, self.bin_vheap_unused, self.old_bin_vheap_unused, self.memory, self.arity, self.program_counter, self.internal_state
-        )            
+        )
     }
 }
 
@@ -630,14 +641,14 @@ pub struct ProgramCounter {
 
 impl ProgramCounter {
     pub fn from_string(s: &str) -> Option<Self> {
-        let re = Regex::new(r"Program counter: (0x[0-9a-fA-F]+) \(([^:]+):([^/]+)/(\d+) \+ (\d+)\)").unwrap();
-        re.captures(s).map(|caps| {
-            ProgramCounter {
-                address: caps[1].to_string(),
-                function: caps[2].to_string(),
-                offset: caps[5].parse().unwrap_or_default(),
-                arity: caps[4].parse().unwrap_or_default(),
-            }
+        let re =
+            Regex::new(r"Program counter: (0x[0-9a-fA-F]+) \(([^:]+):([^/]+)/(\d+) \+ (\d+)\)")
+                .unwrap();
+        re.captures(s).map(|caps| ProgramCounter {
+            address: caps[1].to_string(),
+            function: caps[2].to_string(),
+            offset: caps[5].parse().unwrap_or_default(),
+            arity: caps[4].parse().unwrap_or_default(),
         })
     }
 }
