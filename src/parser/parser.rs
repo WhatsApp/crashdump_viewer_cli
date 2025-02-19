@@ -8,17 +8,9 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
 
-pub struct CDParser {
-    //file: File,
-    // mmap: Mmap,
-    filepath: PathBuf,
-    filename: String,
-    index: Vec<String>,
-}
 
 struct IndexSink {
     matches: Vec<(Tag, Option<String>, u64)>,
@@ -63,6 +55,14 @@ impl Sink for IndexSink {
     }
 }
 
+pub struct CDParser {
+    //file: File,
+    // mmap: Mmap,
+    filepath: PathBuf,
+    filename: String,
+    index: Vec<String>,
+}
+
 impl CDParser {
     pub fn new(filepath: &str) -> Result<Self, io::Error> {
         let (filepath, filename) = Self::split_path_and_filename(filepath)?;
@@ -87,6 +87,7 @@ impl CDParser {
     // at the end there will be a big struct that contains all the sections
     // enrich as needed
 
+    // TODO: fix this to accomodate a vector
     pub fn build_index(&self) -> Result<IndexMap, io::Error> {
         let matcher = RegexMatcher::new(r"^=.*").unwrap();
         let mut searcher = SearcherBuilder::new()
@@ -106,10 +107,24 @@ impl CDParser {
                 start: offset1.to_string(),
                 length: (offset2 - offset1).to_string(),
             };
-            index_map
-                .entry(*tag1)
-                .or_insert_with(HashMap::new)
-                .insert(tag_id.clone(), index_row);
+            match tag_id {
+                Some(id) => {
+                    index_map
+                        .entry(*tag1)
+                        .or_insert_with(|| IndexValue::Map(HashMap::new()))
+                        .as_map_mut()
+                        .unwrap()
+                        .insert(id.clone(), index_row);
+                }
+                None => {
+                    index_map
+                        .entry(*tag1)
+                        .or_insert_with(|| IndexValue::List(Vec::new()))
+                        .as_list_mut()
+                        .unwrap()
+                        .push(index_row);
+                }
+            }
         }
         if let Some(last_match) = sink.matches.last() {
             let (last_tag, last_id, last_offset) = last_match;
@@ -119,26 +134,55 @@ impl CDParser {
                 start: last_offset.to_string(),
                 length: (file_size - last_offset).to_string(),
             };
-            index_map
-                .entry(*last_tag)
-                .or_insert_with(HashMap::new)
-                .insert(last_id.clone(), index_row);
-        }
+            match last_id {
+                Some(id) => {
+                    index_map
+                        .entry(*last_tag)
+                        .or_insert_with(|| IndexValue::Map(HashMap::new()))
+                        .as_map_mut()
+                        .unwrap()
+                        .insert(id.clone(), index_row);
+                }
+                None => {
+                    index_map
+                        .entry(*last_tag)
+                        .or_insert_with(|| IndexValue::List(Vec::new()))
+                        .as_list_mut()
+                        .unwrap()
+                        .push(index_row);
+                }
+            }
+        }    
         Ok(index_map)
     }
 
     pub fn format_index(index_map: &IndexMap) -> Vec<String> {
         let mut formatted_index = Vec::new();
-        for (tag, inner_map) in index_map {
-            for (id, index_row) in inner_map {
-                formatted_index.push(format!(
-                    "{:?}:{} {} {}",
-                    tag,
-                    id.as_deref().unwrap_or_default(),
-                    index_row.start,
-                    index_row.length
-                ));
+        for (tag, index_value) in index_map {
+            match index_value {
+                IndexValue::Map(inner_map) => {
+                    for (id, index_row) in inner_map {
+                        formatted_index.push(format!(
+                            "{:?}:{} {} {}",
+                            tag,
+                            id,
+                            index_row.start,
+                            index_row.length
+                        ));
+                    }
+                }
+                IndexValue::List(inner_list) => {
+                    for index_row in inner_list {
+                        formatted_index.push(format!(
+                            "{:?} {} {}",
+                            tag,
+                            index_row.start,
+                            index_row.length
+                        ));
+                    }
+                }
             }
+
         }
         formatted_index
     }

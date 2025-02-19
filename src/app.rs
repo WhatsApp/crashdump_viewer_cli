@@ -1,7 +1,7 @@
 use color_eyre::Result;
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect, Alignment},
+    layout::{Constraint, Layout, Rect, Alignment, Direction},
     style::{palette::tailwind, Color, Style, Stylize},
     symbols,
     text::Line,
@@ -30,18 +30,12 @@ pub struct App {
     pub crash_dump: types::CrashDump,
     pub index_map: IndexMap,
 
+    /// process information list
+    pub process_info_list: Vec<String>,
     /// random stuff
     pub index: Vec<String>,
-
-    /// first page
-    pub general_info: String,
-
-    /// second page
-    pub process_info_list: Vec<String>,
-    
-    /// misc
-    pub binary_info: HashMap<String, String>,
     pub list_states: HashMap<SelectedTab, ListState>,
+
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -74,10 +68,8 @@ impl Default for App {
             crash_dump: types::CrashDump::new(),
             index: vec![],
             index_map: IndexMap::new(),
-            general_info: "".to_string(),
-            process_info_list: vec![],
-            binary_info: HashMap::new(),
             header: "ERL CRASH DUMP VIEWER".to_string(),
+            process_info_list: vec![],
             list_states: HashMap::from_iter(
                 SelectedTab::iter().map(|tab| (tab, ListState::default())),
             ),
@@ -95,13 +87,14 @@ impl App {
         ret.index_map = idx.clone();
         
         // store the index
-        let idxStr = parser::CDParser::format_index(&idx);
-        ret.index = idxStr;
+        let idx_str = parser::CDParser::format_index(&idx);
+        ret.index = idx_str;
 
         let crash_dump = parser.parse().unwrap();
         ret.crash_dump = crash_dump;
 
         // set the process information
+        ret.process_info_list = ret.crash_dump.processes.keys().cloned().collect::<Vec<String>>();
 
         if let Some(state) = ret.list_states.get_mut(&SelectedTab::Index) {
             if !ret.index.is_empty() {
@@ -239,12 +232,36 @@ impl SelectedTab {
     }
 
     fn render_process(self, area: Rect, buf: &mut Buffer, app: &mut App) {
+        let outer_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![
+                Constraint::Percentage(50),
+                Constraint::Percentage(50)
+            ])
+            .split(area);
+
+        // split the second side into the info side
+        let inner_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![
+                Constraint::Percentage(25),
+                Constraint::Percentage(75)
+            ])
+            .split(outer_layout[1]);
+
+
+        // hashmap is of the form <PID>:ProcessInfo
+
         let index_list_state = app.list_states.get_mut(&SelectedTab::Process).unwrap();
         let list_items: Vec<ListItem> = app
             .process_info_list
             .iter()
             .map(|i| ListItem::new::<&str>(i.as_ref()))
             .collect();
+
+        let selected_item = index_list_state.selected().unwrap_or(0);
+        let selected_pid = app.process_info_list[selected_item].clone();
+        let selected_process = app.crash_dump.processes.get(&selected_pid).unwrap();
 
         let binding = SelectedTab::Process.to_string();
         let list = List::new(list_items)
@@ -253,10 +270,29 @@ impl SelectedTab {
             .repeat_highlight_symbol(true)
             .highlight_style(Style::default().bg(Color::Blue));
 
-        StatefulWidget::render(list, area, buf, index_list_state);
+        
+        let process_info_text = match selected_process {
+            InfoOrIndex::Info(proc_info) => {
+                // Call the `format` method on the `ProcInfo` instance
+                proc_info.format()
+            },
+            InfoOrIndex::Index(_) => unreachable!(),
+        };
+            
+        let detail_block = Paragraph::new(process_info_text)
+        .block(Block::bordered().title("Process Details"))
+        .style(Style::default().fg(Color::White))
+        .alignment(Alignment::Left);
+        
+
+        // render the list
+        StatefulWidget::render(list, outer_layout[0], buf, index_list_state);
+
+        Widget::render(&Paragraph::new("TEST 1"), inner_layout[0], buf);
+        Widget::render(&detail_block, inner_layout[1], buf);
     }
 
-    fn render_binary(self, area: Rect, buf: &mut Buffer, app: &App) {
+    fn render_binary(self, area: Rect, buf: &mut Buffer, _app: &App) {
         Paragraph::new("This is the third tab!")
             .block(self.block())
             .render(area, buf);

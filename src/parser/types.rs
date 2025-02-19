@@ -7,6 +7,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::fs::File;
 use std::borrow::Cow;
 use std::path::PathBuf;
+use regex::Regex;
 
 pub const TAG_PREAMBLE: &str = "erl_crash_dump";
 pub const TAG_ABORT: &str = "abort";
@@ -99,7 +100,7 @@ pub enum DumpSection {
     Preamble(Preamble),
     // Allocator(AllocatorInfo),
     // Node(NodeInfo),
-    // Proc(ProcInfo),
+    Proc(ProcInfo),
     // ProcHeap(ProcHeapInfo),
     // ProcStack(ProcStackInfo),
     // Scheduler(SchedulerInfo),
@@ -218,7 +219,7 @@ pub fn string_tag_to_enum (tag: &str) -> Tag {
     tag_enum
 }
 
-fn parse_section(s: &str) -> Result<DumpSection, String> {
+fn parse_section(s: &str, id: Option<&str>) -> Result<DumpSection, String> {
     let section = GenericSection::from_str(s)?;
     let id = section.id.clone().unwrap_or_else(|| "".to_string());
     let raw_lines = &section.raw_lines;
@@ -229,33 +230,61 @@ fn parse_section(s: &str) -> Result<DumpSection, String> {
             let preamble = Preamble {
                 version: id,
                 time: raw_lines[0].clone(),
-                slogan: data["Slogan"].parse().unwrap(),
-                erts: data["System version"].parse().unwrap(),
-                taints: data["Taints"].parse().unwrap(),
+                slogan: data["Slogan"].clone(),
+                erts: data["System version"].clone(),
+                taints: data["Taints"].clone(),
                 atom_count: data["Atoms"].parse::<i64>().unwrap(),
-                calling_thread: data["Calling Thread"].parse().unwrap(),
+                calling_thread: data["Calling Thread"].clone(),
             };
             DumpSection::Preamble(preamble)
         }
 
         Tag::Memory => {
-            let memory = MemoryInfo {
-                total: data["total"].parse().unwrap(),
-                processes: Processes {
-                    total: data["processes"].parse().unwrap(),
-                    used: data["processes_used"].parse().unwrap(),
-                },
-                system: data["system"].parse().unwrap(),
-                atom: Atom {
-                    total: data["atom"].parse().unwrap(),
-                    used: data["atom_used"].parse().unwrap(),
-                },
-                binary: data["binary"].parse().unwrap(),
-                code: data["code"].parse().unwrap(),
-                ets: data["ets"].parse().unwrap(),
-           };
-           DumpSection::Memory(memory)
-        }   
+            DumpSection::Memory(MemoryInfo::from_generic_section(&data))
+        } 
+
+        Tag::Proc => {
+            // link_list might be optional or nonexistent
+            let link_list: Vec<String> = data["Link list"]
+                .trim_matches(|c| c == '[' || c == ']') // Remove the brackets
+                .split(", ") // Split by comma and space
+                .map(|s| s.to_string()) // Convert each &str to String
+                .collect();
+            let internal_state: Vec<String> = data["Internal State"]
+                .split(" | ") // Split by " | "
+                .map(|s| s.to_string()) // Convert each &str to String
+                .collect();
+    
+            println!("{:?}", data);
+    
+            let proc = ProcInfo {
+                pid: id,
+                state: data["State"].clone(),
+                name: data["Name"].clone(),
+                spawned_as: data["Spawned as"].clone(),
+                spawned_by: data["Spawned by"].clone(),
+                message_queue_length: data["Message queue length"].parse::<i64>().unwrap(),
+                number_of_heap_fragments: data["Number of heap fragments"].parse().unwrap(),
+                heap_fragment_data: data["Heap fragment data"].parse().unwrap(),
+                link_list: link_list,
+                //program_counter: ProgramCounter::from_string(&data["Program counter"]).unwrap(),
+                program_counter: ProgramCounter::default(),
+                reductions: data["Reductions"].parse::<i64>().unwrap(),
+                stack_heap: data["Stack+heap"].parse::<i64>().unwrap(),
+                old_heap: data["OldHeap"].parse::<i64>().unwrap(),
+                heap_unused: data["Heap unused"].parse::<i64>().unwrap(),
+                old_heap_unused: data["OldHeap unused"].parse::<i64>().unwrap(),
+                bin_vheap: data["BinVHeap"].parse::<i64>().unwrap(),
+                old_bin_vheap: data["OldBinVHeap"].parse::<i64>().unwrap(),
+                memory: data["Memory"].parse::<i64>().unwrap(),
+                bin_vheap_unused: data["BinVHeap unused"].parse::<i64>().unwrap(),
+                old_bin_vheap_unused: data["OldBinVHeap unused"].parse::<i64>().unwrap(),
+                //arity: raw_lines[0].split("=").last().unwrap().parse::<i64>().unwrap(),
+                arity: 0,
+                internal_state: internal_state,  
+            };
+            DumpSection::Proc(proc)
+        }  
 
         _ => DumpSection::Generic(section),
     };
@@ -270,11 +299,43 @@ pub struct IndexRow {
     pub length: String,
 }
 
-pub type IndexMap = HashMap<Tag, HashMap<Option<String>, IndexRow>>;
+// pub type IndexMap = HashMap<Tag, HashMap<Option<String>, IndexRow>>;
+#[derive(Debug, Clone)]
+pub enum IndexValue {
+    Map(HashMap<String, IndexRow>),
+    List(Vec<IndexRow>),
+}
+
+impl IndexValue {
+    pub fn as_map_mut(&mut self) -> Option<&mut HashMap<String, IndexRow>> {
+        if let IndexValue::Map(ref mut map) = self {
+            Some(map)
+        } else {
+            None
+        }
+    }
+    pub fn as_list_mut(&mut self) -> Option<&mut Vec<IndexRow>> {
+        if let IndexValue::List(ref mut list) = self {
+            Some(list)
+        } else {
+            None
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            IndexValue::Map(map) => map.len(),
+            IndexValue::List(list) => list.len(),
+        }
+    }
+}
+
+
+pub type IndexMap = HashMap<Tag, IndexValue>;
 
 #[derive(Debug)]
 pub enum InfoOrIndex<T> {
-    Index(IndexRow), // Now Index holds IndexRow
+    Index(IndexRow), 
     Info(T),
 }
 
@@ -338,51 +399,69 @@ impl CrashDump {
         let start_offset: u64 = index_row.start.parse().unwrap_or(0);
         let length: u64 = index_row.length.parse().unwrap_or(0);
         
-
         file.seek(SeekFrom::Start(start_offset))?;
         
         let mut buffer = vec![0; length as usize];
         file.read_exact(&mut buffer)?;
         
         let contents = String::from_utf8_lossy(&buffer);
-        
-
         Ok(contents.to_string())
     }
     
 
     pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
         let mut crash_dump = CrashDump::new();
-        // Open the file
         let mut file = File::open(file_path)?;
-        for (tag, inner_map) in index_map {
-            for (id, index_row) in inner_map {
-                match tag {
-                    Tag::Preamble => {
-                        let contents = Self::load_section(&index_row, &mut file)?;
-                        let res_parse = parse_section(&contents);
-                        // println!("Preamble: {:?}", res_parse);
-                        if let Ok(DumpSection::Preamble(preamble)) = parse_section(&contents) {
-                            crash_dump.preamble = preamble;
+        for (tag, index_value) in index_map {
+            match index_value {
+                IndexValue::Map(inner_map) => {
+                    for (id, index_row) in inner_map {
+                        match tag {
+                            Tag::Preamble => {
+                                let contents = Self::load_section(&index_row, &mut file)?;
+                                if let Ok(DumpSection::Preamble(preamble)) = parse_section(&contents, Some(&id)) {
+                                    crash_dump.preamble = preamble;
+                                }
+                            }
+                            Tag::Memory => {
+                                let contents = Self::load_section(&index_row, &mut file)?;
+
+                                if let Ok(DumpSection::Memory(memory)) = parse_section(&contents, Some(&id)) {
+                                    crash_dump.memory = memory;
+                                }
+                            }
+
+                            Tag::Proc => {
+                                let contents = Self::load_section(&index_row, &mut file)?;
+                                if let Ok(DumpSection::Proc(proc)) = parse_section(&contents, Some(&id)) {
+                                    crash_dump.processes.insert(id.clone(), InfoOrIndex::Info(proc));
+                                }
+                            }
+                            
+                            _ => {}
                         }
                     }
-                    Tag::Memory => {
-                        let contents = Self::load_section(&index_row, &mut file)?;
-                        let res_parse = parse_section(&contents);
-                        // println!("Memory: {:?}", res_parse);
-                        if let Ok(DumpSection::Memory(memory)) = parse_section(&contents) {
-                            crash_dump.memory = memory;
-                        }
-                    }
-                    
-                    _ => {}
                 }
+                IndexValue::List(index_rows) => {
+                    for _index_row in index_rows {
+                        match tag {
+                            // Tag::Fun => {
+                            //     let contents = Self::load_section(index_row, &mut file)?;
+                            //     if let Ok(DumpSection::Fun(section)) = parse_section(&contents) {
+                            //         // Handle the vector section
+                            //         // For example, you might want to append to a vector in crash_dump
+                            //         crash_dump.some_vector_section.push(section);
+                            //     }
+                            // }
+                            _ => {}
+                        
+                        }
+                    }
+                }   
             }
         }
         Ok(crash_dump)
     }
-
-
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
@@ -405,13 +484,6 @@ impl Preamble {
     }
 }
 
-// #[derive(Debug, Deserialize)]
-pub struct ERTS {
-    pub version: String,
-    pub thread: String,
-    pub word_size: i32,
-    pub async_status: String,
-}
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct MemoryInfo {
     pub total: i64,
@@ -429,6 +501,24 @@ impl MemoryInfo {
             "Total: {}\nProcesses: {:#?}\nSystem: {}\nAtom: {:#?}\nBinary: {}\nCode: {}\nETS: {}",
             self.total, self.processes, self.system, self.atom, self.binary, self.code, self.ets
         )
+    }
+
+    pub fn from_generic_section(data: &HashMap<String, String>) -> Self {
+        MemoryInfo {
+            total: data["total"].parse().unwrap(),
+            processes: Processes {
+                total: data["processes"].parse().unwrap(),
+                used: data["processes_used"].parse().unwrap(),
+            },
+            system: data["system"].parse().unwrap(),
+            atom: Atom {
+                total: data["atom"].parse().unwrap(),
+                used: data["atom_used"].parse().unwrap(),
+            },
+            binary: data["binary"].parse().unwrap(),
+            code: data["code"].parse().unwrap(),
+            ets: data["ets"].parse().unwrap(),
+        }
     }
 }
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
@@ -493,7 +583,8 @@ pub struct NodeInfo {
     pub type_: String,
     pub status: String,
 }
-// #[derive(Debug, Deserialize)]
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
 pub struct ProcInfo {
     pub pid: String,
     pub state: String,
@@ -501,19 +592,10 @@ pub struct ProcInfo {
     pub spawned_as: String,
     pub spawned_by: String,
     pub message_queue_length: i64,
-    pub heap_fragments: HeapFragments,
+    pub number_of_heap_fragments: i64,
+    pub heap_fragment_data: i64,
+    pub link_list: Vec<String>,
     pub reductions: i64,
-    pub memory: Memory,
-    pub program_counter: ProgramCounter,
-    pub internal_state: Vec<String>,
-}
-// #[derive(Debug, Deserialize)]
-pub struct HeapFragments {
-    pub count: i64,
-    pub data: i64,
-}
-// #[derive(Debug, Deserialize)]
-pub struct Memory {
     pub stack_heap: i64,
     pub old_heap: i64,
     pub heap_unused: i64,
@@ -522,15 +604,44 @@ pub struct Memory {
     pub old_bin_vheap: i64,
     pub bin_vheap_unused: i64,
     pub old_bin_vheap_unused: i64,
-    pub total: i64,
+    pub memory: i64,
+    pub arity: i64,
+    pub program_counter: ProgramCounter,
+    pub internal_state: Vec<String>,
 }
-// #[derive(Debug, Deserialize)]
+impl ProcInfo {
+    pub fn format(&self) -> String {
+        format!(
+            "Pid: {}\nState: {}\nName: {}\nSpawned As: {}\nSpawned By: {}\nMessage Queue Length: {}\nNumber of Heap Fragments: {}\nHeap Fragment Data: {}\nLink List: {:#?}\nReductions: {}\nStack Heap: {}\nOld Heap: {}\nHeap Unused: {}\nOld Heap Unused: {}\nBin Vheap: {}\nOld Bin Vheap: {}\nBin Vheap
+Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\nProgram Counter:
+{:#?}\nInternal State: {:#?}",
+            self.pid, self.state, self.name, self.spawned_as, self.spawned_by, self.message_queue_length, self.number_of_heap_fragments, self.heap_fragment_data, self.link_list, self.reductions, self.stack_heap, self.old_heap, self.heap_unused, self.old_heap_unused, self.bin_vheap, self.old_bin_vheap, self.bin_vheap_unused, self.old_bin_vheap_unused, self.memory, self.arity, self.program_counter, self.internal_state
+        )            
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
 pub struct ProgramCounter {
     pub address: String,
     pub function: String,
     pub offset: i64,
     pub arity: i32,
 }
+
+impl ProgramCounter {
+    pub fn from_string(s: &str) -> Option<Self> {
+        let re = Regex::new(r"Program counter: (0x[0-9a-fA-F]+) \(([^:]+):([^/]+)/(\d+) \+ (\d+)\)").unwrap();
+        re.captures(s).map(|caps| {
+            ProgramCounter {
+                address: caps[1].to_string(),
+                function: caps[2].to_string(),
+                offset: caps[5].parse().unwrap_or_default(),
+                arity: caps[4].parse().unwrap_or_default(),
+            }
+        })
+    }
+}
+
 // #[derive(Debug, Deserialize)]
 pub struct ProcHeapInfo {
     pub pid: String,
