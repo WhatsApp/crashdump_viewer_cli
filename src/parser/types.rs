@@ -5,48 +5,49 @@ use std::str::FromStr;
 use std::time::SystemTime;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::fs::File;
+use std::borrow::Cow;
+use std::path::PathBuf;
 
-
-pub const TAG_PREAMBLE: &[u8] = b"erl_crash_dump";
-pub const TAG_ABORT: &[u8] = b"abort";
-pub const TAG_ALLOCATED_AREAS: &[u8] = b"allocated_areas";
-pub const TAG_ALLOCATOR: &[u8] = b"allocator";
-pub const TAG_ATOMS: &[u8] = b"atoms";
-pub const TAG_BINARY: &[u8] = b"binary";
-pub const TAG_DIRTY_CPU_SCHEDULER: &[u8] = b"dirty_cpu_scheduler";
-pub const TAG_DIRTY_CPU_RUN_QUEUE: &[u8] = b"dirty_cpu_run_queue";
-pub const TAG_DIRTY_IO_SCHEDULER: &[u8] = b"dirty_io_scheduler";
-pub const TAG_DIRTY_IO_RUN_QUEUE: &[u8] = b"dirty_io_run_queue";
-pub const TAG_ENDE: &[u8] = b"ende";
-pub const TAG_ERL_CRASH_DUMP: &[u8] = b"erl_crash_dump";
-pub const TAG_ETS: &[u8] = b"ets";
-pub const TAG_FUN: &[u8] = b"fun";
-pub const TAG_HASH_TABLE: &[u8] = b"hash_table";
-pub const TAG_HIDDEN_NODE: &[u8] = b"hidden_node";
-pub const TAG_INDEX_TABLE: &[u8] = b"index_table";
-pub const TAG_INSTR_DATA: &[u8] = b"instr_data";
-pub const TAG_INTERNAL_ETS: &[u8] = b"internal_ets";
-pub const TAG_LITERALS: &[u8] = b"literals";
-pub const TAG_LOADED_MODULES: &[u8] = b"loaded_modules";
-pub const TAG_MEMORY: &[u8] = b"memory";
-pub const TAG_MEMORY_MAP: &[u8] = b"memory_map";
-pub const TAG_MEMORY_STATUS: &[u8] = b"memory_status";
-pub const TAG_MOD: &[u8] = b"mod";
-pub const TAG_NO_DISTRIBUTION: &[u8] = b"no_distribution";
-pub const TAG_NODE: &[u8] = b"node";
-pub const TAG_NOT_CONNECTED: &[u8] = b"not_connected";
-pub const TAG_OLD_INSTR_DATA: &[u8] = b"old_instr_data";
-pub const TAG_PERSISTENT_TERMS: &[u8] = b"persistent_terms";
-pub const TAG_PORT: &[u8] = b"port";
-pub const TAG_PROC: &[u8] = b"proc";
-pub const TAG_PROC_DICTIONARY: &[u8] = b"proc_dictionary";
-pub const TAG_PROC_HEAP: &[u8] = b"proc_heap";
-pub const TAG_PROC_MESSAGES: &[u8] = b"proc_messages";
-pub const TAG_PROC_STACK: &[u8] = b"proc_stack";
-pub const TAG_SCHEDULER: &[u8] = b"scheduler";
-pub const TAG_TIMER: &[u8] = b"timer";
-pub const TAG_VISIBLE_NODE: &[u8] = b"visible_node";
-pub const TAG_END: &[u8] = b"end";
+pub const TAG_PREAMBLE: &str = "erl_crash_dump";
+pub const TAG_ABORT: &str = "abort";
+pub const TAG_ALLOCATED_AREAS: &str = "allocated_areas";
+pub const TAG_ALLOCATOR: &str = "allocator";
+pub const TAG_ATOMS: &str = "atoms";
+pub const TAG_BINARY: &str = "binary";
+pub const TAG_DIRTY_CPU_SCHEDULER: &str = "dirty_cpu_scheduler";
+pub const TAG_DIRTY_CPU_RUN_QUEUE: &str = "dirty_cpu_run_queue";
+pub const TAG_DIRTY_IO_SCHEDULER: &str = "dirty_io_scheduler";
+pub const TAG_DIRTY_IO_RUN_QUEUE: &str = "dirty_io_run_queue";
+pub const TAG_ENDE: &str = "ende";
+pub const TAG_ERL_CRASH_DUMP: &str = "erl_crash_dump";
+pub const TAG_ETS: &str = "ets";
+pub const TAG_FUN: &str = "fun";
+pub const TAG_HASH_TABLE: &str = "hash_table";
+pub const TAG_HIDDEN_NODE: &str = "hidden_node";
+pub const TAG_INDEX_TABLE: &str = "index_table";
+pub const TAG_INSTR_DATA: &str = "instr_data";
+pub const TAG_INTERNAL_ETS: &str = "internal_ets";
+pub const TAG_LITERALS: &str = "literals";
+pub const TAG_LOADED_MODULES: &str = "loaded_modules";
+pub const TAG_MEMORY: &str = "memory";
+pub const TAG_MEMORY_MAP: &str = "memory_map";
+pub const TAG_MEMORY_STATUS: &str = "memory_status";
+pub const TAG_MOD: &str = "mod";
+pub const TAG_NO_DISTRIBUTION: &str = "no_distribution";
+pub const TAG_NODE: &str = "node";
+pub const TAG_NOT_CONNECTED: &str = "not_connected";
+pub const TAG_OLD_INSTR_DATA: &str = "old_instr_data";
+pub const TAG_PERSISTENT_TERMS: &str = "persistent_terms";
+pub const TAG_PORT: &str = "port";
+pub const TAG_PROC: &str = "proc";
+pub const TAG_PROC_DICTIONARY: &str = "proc_dictionary";
+pub const TAG_PROC_HEAP: &str = "proc_heap";
+pub const TAG_PROC_MESSAGES: &str = "proc_messages";
+pub const TAG_PROC_STACK: &str = "proc_stack";
+pub const TAG_SCHEDULER: &str = "scheduler";
+pub const TAG_TIMER: &str = "timer";
+pub const TAG_VISIBLE_NODE: &str = "visible_node";
+pub const TAG_END: &str = "end";
 
 // Section tags - lifted from https://github.com/erlang/otp/blob/master/lib/observer/src/crashdump_viewer.erl#L121
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
@@ -105,7 +106,7 @@ pub enum DumpSection {
     // Ets(EtsInfo),
     // Timer(TimerInfo),
     // Port(PortInfo),
-    // Memory(MemoryInfo),
+    Memory(MemoryInfo),
     // Atoms(Vec<String>),
     // PersistentTerms(PersistentTermInfo),
     // LoadedModules(LoadedModules),
@@ -143,7 +144,7 @@ impl FromStr for GenericSection {
         let mut raw_lines = Vec::new();
 
         for line in lines {
-            let parts: Vec<&str> = line.splitn(2, ":").collect();
+            let parts: Vec<&str> = line.splitn(2, ": ").collect();
             if parts.len() == 2 {
                 // key-value pair
                 let key = parts[0].trim().to_string();
@@ -170,24 +171,91 @@ impl FromStr for GenericSection {
     }
 }
 
+pub fn string_tag_to_enum (tag: &str) -> Tag {
+    let tag_enum = match tag {
+        t if t == TAG_PREAMBLE => Tag::Preamble,
+        t if t == TAG_ABORT => Tag::Abort,
+        t if t == TAG_ALLOCATED_AREAS => Tag::AllocatedAreas,
+        t if t == TAG_ALLOCATOR => Tag::Allocator,
+        t if t == TAG_ATOMS => Tag::Atoms,
+        t if t == TAG_BINARY => Tag::Binary,
+        t if t == TAG_DIRTY_CPU_SCHEDULER => Tag::DirtyCpuScheduler,
+        t if t == TAG_DIRTY_CPU_RUN_QUEUE => Tag::DirtyCpuRunQueue,
+        t if t == TAG_DIRTY_IO_SCHEDULER => Tag::DirtyIoScheduler,
+        t if t == TAG_DIRTY_IO_RUN_QUEUE => Tag::DirtyIoRunQueue,
+        t if t == TAG_ENDE => Tag::Ende,
+        t if t == TAG_ERL_CRASH_DUMP => Tag::ErlCrashDump,
+        t if t == TAG_ETS => Tag::Ets,
+        t if t == TAG_FUN => Tag::Fun,
+        t if t == TAG_HASH_TABLE => Tag::HashTable,
+        t if t == TAG_HIDDEN_NODE => Tag::HiddenNode,
+        t if t == TAG_INDEX_TABLE => Tag::IndexTable,
+        t if t == TAG_INSTR_DATA => Tag::InstrData,
+        t if t == TAG_INTERNAL_ETS => Tag::InternalEts,
+        t if t == TAG_LITERALS => Tag::Literals,
+        t if t == TAG_LOADED_MODULES => Tag::LoadedModules,
+        t if t == TAG_MEMORY => Tag::Memory,
+        t if t == TAG_MEMORY_MAP => Tag::MemoryMap,
+        t if t == TAG_MEMORY_STATUS => Tag::MemoryStatus,
+        t if t == TAG_MOD => Tag::Mod,
+        t if t == TAG_NO_DISTRIBUTION => Tag::NoDistribution,
+        t if t == TAG_NODE => Tag::Node,
+        t if t == TAG_NOT_CONNECTED => Tag::NotConnected,
+        t if t == TAG_OLD_INSTR_DATA => Tag::OldInstrData,
+        t if t == TAG_PERSISTENT_TERMS => Tag::PersistentTerms,
+        t if t == TAG_PORT => Tag::Port,
+        t if t == TAG_PROC => Tag::Proc,
+        t if t == TAG_PROC_DICTIONARY => Tag::ProcDictionary,
+        t if t == TAG_PROC_HEAP => Tag::ProcHeap,
+        t if t == TAG_PROC_MESSAGES => Tag::ProcMessages,
+        t if t == TAG_PROC_STACK => Tag::ProcStack,
+        t if t == TAG_SCHEDULER => Tag::Scheduler,
+        t if t == TAG_TIMER => Tag::Timer,
+        t if t == TAG_VISIBLE_NODE => Tag::VisibleNode,
+        t if t == TAG_END => Tag::End,
+        _ => unreachable!(),
+    };
+    tag_enum
+}
+
 fn parse_section(s: &str) -> Result<DumpSection, String> {
     let section = GenericSection::from_str(s)?;
     let id = section.id.clone().unwrap_or_else(|| "".to_string());
     let raw_lines = &section.raw_lines;
     let data = &section.data;
 
-    let section = match section.tag.as_str() {
-        "preamble" => {
+    let section = match string_tag_to_enum(section.tag.as_str()) {
+        Tag::Preamble => {
             let preamble = Preamble {
                 version: id,
                 time: raw_lines[0].clone(),
                 slogan: data["Slogan"].parse().unwrap(),
                 erts: data["System version"].parse().unwrap(),
                 taints: data["Taints"].parse().unwrap(),
-                atom_count: data["Atom count"].parse::<i64>().unwrap(),
+                atom_count: data["Atoms"].parse::<i64>().unwrap(),
+                calling_thread: data["Calling Thread"].parse().unwrap(),
             };
             DumpSection::Preamble(preamble)
         }
+
+        Tag::Memory => {
+            let memory = MemoryInfo {
+                total: data["total"].parse().unwrap(),
+                processes: Processes {
+                    total: data["processes"].parse().unwrap(),
+                    used: data["processes_used"].parse().unwrap(),
+                },
+                system: data["system"].parse().unwrap(),
+                atom: Atom {
+                    total: data["atom"].parse().unwrap(),
+                    used: data["atom_used"].parse().unwrap(),
+                },
+                binary: data["binary"].parse().unwrap(),
+                code: data["code"].parse().unwrap(),
+                ets: data["ets"].parse().unwrap(),
+           };
+           DumpSection::Memory(memory)
+        }   
 
         _ => DumpSection::Generic(section),
     };
@@ -239,6 +307,7 @@ impl CrashDump {
                 erts: "".to_string(),
                 taints: "".to_string(),
                 atom_count: 0,
+                calling_thread: "".to_string(),
             },
             memory: MemoryInfo {
                 total: 0,
@@ -265,7 +334,24 @@ impl CrashDump {
         }
     }
 
-    pub fn from_index_map(index_map: &IndexMap, file_path: &str) -> io::Result<Self> {
+    pub fn load_section(index_row: &IndexRow, file: &mut File) -> io::Result<String> {
+        let start_offset: u64 = index_row.start.parse().unwrap_or(0);
+        let length: u64 = index_row.length.parse().unwrap_or(0);
+        
+
+        file.seek(SeekFrom::Start(start_offset))?;
+        
+        let mut buffer = vec![0; length as usize];
+        file.read_exact(&mut buffer)?;
+        
+        let contents = String::from_utf8_lossy(&buffer);
+        
+
+        Ok(contents.to_string())
+    }
+    
+
+    pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
         let mut crash_dump = CrashDump::new();
         // Open the file
         let mut file = File::open(file_path)?;
@@ -273,22 +359,22 @@ impl CrashDump {
             for (id, index_row) in inner_map {
                 match tag {
                     Tag::Preamble => {
-                        // Convert start and length to u64
-                        let start_offset: u64 = index_row.start.parse().unwrap_or(0);
-                        let length: u64 = index_row.length.parse().unwrap_or(0);
-                        // Seek to the start offset
-                        file.seek(SeekFrom::Start(start_offset))?;
-                        // Read the specified length of bytes
-                        let mut buffer = vec![0; length as usize];
-                        file.read_exact(&mut buffer)?;
-                        // Convert buffer to a string
-                        let contents = String::from_utf8_lossy(&buffer);
-                        // Parse the section
+                        let contents = Self::load_section(&index_row, &mut file)?;
+                        let res_parse = parse_section(&contents);
+                        // println!("Preamble: {:?}", res_parse);
                         if let Ok(DumpSection::Preamble(preamble)) = parse_section(&contents) {
                             crash_dump.preamble = preamble;
                         }
                     }
-                    // Other tags can be handled similarly
+                    Tag::Memory => {
+                        let contents = Self::load_section(&index_row, &mut file)?;
+                        let res_parse = parse_section(&contents);
+                        // println!("Memory: {:?}", res_parse);
+                        if let Ok(DumpSection::Memory(memory)) = parse_section(&contents) {
+                            crash_dump.memory = memory;
+                        }
+                    }
+                    
                     _ => {}
                 }
             }
@@ -307,7 +393,18 @@ pub struct Preamble {
     pub erts: String,
     pub taints: String,
     pub atom_count: i64,
+    pub calling_thread: String,
 }
+
+impl Preamble {
+    pub fn format(&self) -> String {
+        format!(
+            "Version: {}\nCrash Dump Created On: {}\nSlogan: {}\nERTS: {}\nTaints: {}\nAtom Count: {}\nCalling Thread: {}",
+            self.version, self.time, self.slogan, self.erts, self.taints, self.atom_count, self.calling_thread
+        )
+    }
+}
+
 // #[derive(Debug, Deserialize)]
 pub struct ERTS {
     pub version: String,
@@ -315,7 +412,7 @@ pub struct ERTS {
     pub word_size: i32,
     pub async_status: String,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct MemoryInfo {
     pub total: i64,
     pub processes: Processes,
@@ -325,12 +422,21 @@ pub struct MemoryInfo {
     pub code: i64,
     pub ets: i64,
 }
-// #[derive(Debug, Deserialize)]
+
+impl MemoryInfo {
+    pub fn format(&self) -> String {
+        format!(
+            "Total: {}\nProcesses: {:#?}\nSystem: {}\nAtom: {:#?}\nBinary: {}\nCode: {}\nETS: {}",
+            self.total, self.processes, self.system, self.atom, self.binary, self.code, self.ets
+        )
+    }
+}
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct Processes {
     pub total: i64,
     pub used: i64,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct Atom {
     pub total: i64,
     pub used: i64,

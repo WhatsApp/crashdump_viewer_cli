@@ -17,7 +17,6 @@ pub struct CDParser {
     // mmap: Mmap,
     filepath: PathBuf,
     filename: String,
-    crash_dump: CrashDump,
     index: Vec<String>,
 }
 
@@ -46,55 +45,18 @@ impl Sink for IndexSink {
                 .unwrap_or(match_bytes.len() - 1);
 
             let tag = &match_bytes[1..tag_end];
-            let tag_enum = match tag {
-                t if t == TAG_PREAMBLE => Tag::Preamble,
-                t if t == TAG_ABORT => Tag::Abort,
-                t if t == TAG_ALLOCATED_AREAS => Tag::AllocatedAreas,
-                t if t == TAG_ALLOCATOR => Tag::Allocator,
-                t if t == TAG_ATOMS => Tag::Atoms,
-                t if t == TAG_BINARY => Tag::Binary,
-                t if t == TAG_DIRTY_CPU_SCHEDULER => Tag::DirtyCpuScheduler,
-                t if t == TAG_DIRTY_CPU_RUN_QUEUE => Tag::DirtyCpuRunQueue,
-                t if t == TAG_DIRTY_IO_SCHEDULER => Tag::DirtyIoScheduler,
-                t if t == TAG_DIRTY_IO_RUN_QUEUE => Tag::DirtyIoRunQueue,
-                t if t == TAG_ENDE => Tag::Ende,
-                t if t == TAG_ERL_CRASH_DUMP => Tag::ErlCrashDump,
-                t if t == TAG_ETS => Tag::Ets,
-                t if t == TAG_FUN => Tag::Fun,
-                t if t == TAG_HASH_TABLE => Tag::HashTable,
-                t if t == TAG_HIDDEN_NODE => Tag::HiddenNode,
-                t if t == TAG_INDEX_TABLE => Tag::IndexTable,
-                t if t == TAG_INSTR_DATA => Tag::InstrData,
-                t if t == TAG_INTERNAL_ETS => Tag::InternalEts,
-                t if t == TAG_LITERALS => Tag::Literals,
-                t if t == TAG_LOADED_MODULES => Tag::LoadedModules,
-                t if t == TAG_MEMORY => Tag::Memory,
-                t if t == TAG_MEMORY_MAP => Tag::MemoryMap,
-                t if t == TAG_MEMORY_STATUS => Tag::MemoryStatus,
-                t if t == TAG_MOD => Tag::Mod,
-                t if t == TAG_NO_DISTRIBUTION => Tag::NoDistribution,
-                t if t == TAG_NODE => Tag::Node,
-                t if t == TAG_NOT_CONNECTED => Tag::NotConnected,
-                t if t == TAG_OLD_INSTR_DATA => Tag::OldInstrData,
-                t if t == TAG_PERSISTENT_TERMS => Tag::PersistentTerms,
-                t if t == TAG_PORT => Tag::Port,
-                t if t == TAG_PROC => Tag::Proc,
-                t if t == TAG_PROC_DICTIONARY => Tag::ProcDictionary,
-                t if t == TAG_PROC_HEAP => Tag::ProcHeap,
-                t if t == TAG_PROC_MESSAGES => Tag::ProcMessages,
-                t if t == TAG_PROC_STACK => Tag::ProcStack,
-                t if t == TAG_SCHEDULER => Tag::Scheduler,
-                t if t == TAG_TIMER => Tag::Timer,
-                t if t == TAG_VISIBLE_NODE => Tag::VisibleNode,
-                t if t == TAG_END => Tag::End,
-                _ => unreachable!(),
-            };
+
+            // println!("tag: {:?}", std::str::from_utf8(tag).unwrap());
+            let tag_enum = types::string_tag_to_enum(std::str::from_utf8(tag).unwrap());
+
             let tag_id_string = if match_bytes.len() > tag_end + 1 {
                 let tag_id_cow = String::from_utf8_lossy(&match_bytes[tag_end + 1..]);
                 Some(tag_id_cow.into_owned())
             } else {
                 None
             };
+
+
             self.matches.push((tag_enum, tag_id_string, byte_offset));
         }
         Ok(true)
@@ -104,16 +66,15 @@ impl Sink for IndexSink {
 impl CDParser {
     pub fn new(filepath: &str) -> Result<Self, io::Error> {
         let (filepath, filename) = Self::split_path_and_filename(filepath)?;
-
+        let realpath = filepath.join(&filename);
         // need to figure out mmap later
         // let mmap = unsafe { Mmap::map(&file)? };
 
         Ok(CDParser {
             //file,
             // mmap,
-            filepath,
+            filepath: realpath,
             filename,
-            crash_dump: CrashDump::new(),
             index: Vec::new(),
         })
     }
@@ -133,9 +94,8 @@ impl CDParser {
             .line_number(false)
             .build();
         let mut sink = IndexSink::new();
-        let realpath = self.filepath.join(&self.filename);
-        searcher.search_path(&matcher, &realpath, &mut sink)?;
-        let file_size = std::fs::metadata(&realpath)?.len();
+        searcher.search_path(&matcher, &self.filepath, &mut sink)?;
+        let file_size = std::fs::metadata(&self.filepath)?.len();
         let mut index_map: IndexMap = HashMap::new();
         for window in sink.matches.windows(2) {
             let (tag1, tag_id, offset1) = &window[0];
@@ -184,19 +144,11 @@ impl CDParser {
     }
 
     // after building the IndexMap, we can iterate through it and deserialize into the CrashDump struct
-    pub fn parse(&mut self) -> Result<(), io::Error> {
+    pub fn parse(&mut self) -> io::Result<CrashDump> {
         let index_map = self.build_index()?;
-        for (tag, inner_map) in index_map {
-            for (id, index_row) in inner_map {
-                
-            }
-        }
-        Ok(())
-    }
-
-    // returns the slogan, crash time, and other general information
-    pub fn get_premable(&self) -> Preamble {
-        self.crash_dump.preamble.clone()
+        let crash_dump = CrashDump::from_index_map(&index_map, &self.filepath);
+        
+        crash_dump
     }
 
     fn split_path_and_filename(filepath: &str) -> Result<(PathBuf, String), io::Error> {

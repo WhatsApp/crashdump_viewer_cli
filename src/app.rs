@@ -1,7 +1,7 @@
 use color_eyre::Result;
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Rect, Alignment},
     style::{palette::tailwind, Color, Style, Stylize},
     symbols,
     text::Line,
@@ -12,6 +12,7 @@ use std::error;
 use strum::IntoEnumIterator;
 use strum_macros::{Display, EnumIter, FromRepr};
 use crate::parser::*;
+use crate::parser::CrashDump;
 
 /// Application result type.
 pub type AppResult<T> = std::result::Result<T, Box<dyn error::Error>>;
@@ -22,6 +23,12 @@ pub struct App {
     pub header: String,
     pub state: AppState,
     pub selected_tab: SelectedTab,
+
+    /// parser
+    pub parser: parser::CDParser,
+    pub filepath: String,
+    pub crash_dump: types::CrashDump,
+    pub index_map: IndexMap,
 
     /// random stuff
     pub index: Vec<String>,
@@ -62,7 +69,11 @@ impl Default for App {
         Self {
             state: AppState::Running,
             selected_tab: SelectedTab::General,
+            parser: parser::CDParser::new("").unwrap(),
+            filepath: "".to_string(),
+            crash_dump: types::CrashDump::new(),
             index: vec![],
+            index_map: IndexMap::new(),
             general_info: "".to_string(),
             process_info_list: vec![],
             binary_info: HashMap::new(),
@@ -76,12 +87,19 @@ impl Default for App {
 
 impl App {
     /// Constructs a new instance of [`App`].
-    pub fn new(idx: IndexMap) -> Self {
+    pub fn new(filepath: String) -> Self {
+        let mut parser = parser::CDParser::new(&filepath).unwrap();
+        let idx = parser.build_index().unwrap();
+        
         let mut ret = Self::default();
-
+        ret.index_map = idx.clone();
+        
         // store the index
-        let idxStr = crate::parser::CDParser::format_index(&idx);
+        let idxStr = parser::CDParser::format_index(&idx);
         ret.index = idxStr;
+
+        let crash_dump = parser.parse().unwrap();
+        ret.crash_dump = crash_dump;
 
         // set the process information
 
@@ -184,10 +202,22 @@ impl SelectedTab {
             .into()
     }
 
-    fn render_general(self, area: Rect, buf: &mut Buffer, app: &App) {
-        Paragraph::new("Hello, World!")
-            .block(self.block())
-            .render(area, buf);
+    fn render_general(self, area: Rect, buf: &mut Buffer, app: &mut App) {
+        let preamble_text = app.crash_dump.preamble.format();
+        let process_count = app.index_map[&Tag::Proc].len();
+        let ets_count = app.index_map[&Tag::Ets].len();
+        let fn_count = app.index_map[&Tag::Fun].len();
+
+        let memory_info_text = app.crash_dump.memory.format();
+
+        let general_info_text = format!("{}\n\n{}\n\nProcess Count: {}\nETS Tables: {}\nFuns: {}", preamble_text, memory_info_text, process_count, ets_count, fn_count);
+        
+        let paragraph = Paragraph::new(general_info_text)
+        .block(Block::bordered().title("General Information"))
+        .style(Style::default().fg(Color::White))
+        .alignment(Alignment::Left);
+
+        Widget::render(&paragraph, area, buf);
     }
 
     fn render_index(self, area: Rect, buf: &mut Buffer, app: &mut App) {

@@ -35,12 +35,11 @@ struct Args {
 async fn main() -> AppResult<()> {
     let args = Args::parse();
     
-    let mut parser = parser::CDParser::new(&args.filepath).unwrap();
-    let idx = parser.build_index()?;
+
 
     if args.action == "tui" {
         // Create an application.
-        let mut app = App::new(idx);
+        let mut app = App::new(args.filepath);
 
         // Initialize the terminal user interface.
         let backend = CrosstermBackend::new(io::stdout());
