@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{palette::tailwind, Color, Style, Stylize},
     symbols,
-    text::Line,
+    text::{Line, Span, Text},
     widgets::{
         Block, List, ListDirection, ListItem, ListState, Padding, Paragraph, StatefulWidget, Tabs,
         Widget,
@@ -94,7 +94,8 @@ impl App {
         let crash_dump = parser.parse().unwrap();
         ret.crash_dump = crash_dump;
 
-        // set the process information
+        // set the process list to be a tuple of [pid, name, heap_size, msgq_len]
+        // we need to be able to sort an array based on the msgqlength as well
         ret.tab_lists.get_mut(&SelectedTab::Process).map(|val| {
             *val = ret
                 .crash_dump
@@ -217,10 +218,46 @@ impl SelectedTab {
 
         let memory_info_text = app.crash_dump.memory.format();
 
-        let general_info_text = format!(
-            "{}\n\n{}\n\nProcess Count: {}\nETS Tables: {}\nFuns: {}",
-            preamble_text, memory_info_text, process_count, ets_count, fn_count
-        );
+        // Split the preamble text into lines
+        let preamble_lines: Vec<Line> = preamble_text
+            .lines()
+            .map(|line| Line::from(Span::styled(line, Style::default().fg(Color::White))))
+            .collect();
+
+        // Split the memory information text into lines
+        let memory_information_lines: Vec<Line> = memory_info_text
+            .lines()
+            .map(|line| Line::from(Span::styled(line, Style::default().fg(Color::White))))
+            .collect();
+
+        // Add a header for memory information
+        let memory_information_header = Line::from(vec![
+            Span::styled("Memory Information:", Style::default().fg(Color::Yellow)),
+            Span::raw("\n"),
+        ]);
+
+        let process_count = Line::from(vec![
+            Span::styled("Process Count: ", Style::default().fg(Color::Cyan)),
+            Span::styled(process_count.to_string(), Style::default().fg(Color::White)),
+        ]);
+
+        let ets_count = Line::from(vec![
+            Span::styled("ETS Tables: ", Style::default().fg(Color::Cyan)),
+            Span::styled(ets_count.to_string(), Style::default().fg(Color::White)),
+        ]);
+
+        let fn_count = Line::from(vec![
+            Span::styled("Funs: ", Style::default().fg(Color::Cyan)),
+            Span::styled(fn_count.to_string(), Style::default().fg(Color::White)),
+        ]);
+
+        // Combine all lines into a single Text object
+        let mut general_info_text = Text::from(preamble_lines);
+        general_info_text.extend(vec![memory_information_header]);
+        general_info_text.extend(memory_information_lines);
+        general_info_text.extend(process_count);
+        general_info_text.extend(ets_count);
+        general_info_text.extend(fn_count);
 
         let paragraph = Paragraph::new(general_info_text)
             .block(Block::bordered().title("General Information"))
@@ -259,7 +296,6 @@ impl SelectedTab {
             .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
             .split(outer_layout[1]);
 
-        // hashmap is of the form <PID>:ProcessInfo
 
         let process_list_state = app.list_states.get_mut(&SelectedTab::Process).unwrap();
         let list_items: Vec<ListItem> = app.tab_lists[&SelectedTab::Process]
@@ -291,7 +327,6 @@ impl SelectedTab {
             .style(Style::default().fg(Color::White))
             .alignment(Alignment::Left);
 
-        // render the list
         Widget::render(&Paragraph::new("TEST 1"), inner_layout[0], buf);
         Widget::render(&detail_block, inner_layout[1], buf);
         StatefulWidget::render(list, outer_layout[0], buf, process_list_state);

@@ -260,6 +260,11 @@ fn parse_section(s: &str, id: Option<&str>) -> Result<DumpSection, String> {
                 .map(|s| s.split(" | ").map(|s| s.to_string()).collect())
                 .unwrap_or_default();
 
+            let program_counter: Option<ProgramCounter> = data
+                .get("Program counter")
+                .map(|s| ProgramCounter::from_string(s))
+                .unwrap_or_default();
+
             let proc = ProcInfo {
                 pid: id,
                 state: data["State"].clone(),
@@ -273,8 +278,8 @@ fn parse_section(s: &str, id: Option<&str>) -> Result<DumpSection, String> {
                 number_of_heap_fragments: data["Number of heap fragments"].parse().unwrap(),
                 heap_fragment_data: data["Heap fragment data"].parse().unwrap(),
                 link_list: link_list,
-                //program_counter: ProgramCounter::from_string(&data["Program counter"]).unwrap(),
-                program_counter: ProgramCounter::default(),
+                program_counter: program_counter.unwrap_or_default(),
+                // program_counter: ProgramCounter::default(),
                 reductions: data["Reductions"].parse::<i64>().unwrap(),
                 stack_heap: data["Stack+heap"].parse::<i64>().unwrap(),
                 old_heap: data["OldHeap"].parse::<i64>().unwrap(),
@@ -429,15 +434,6 @@ impl CrashDump {
                                     crash_dump.preamble = preamble;
                                 }
                             }
-                            Tag::Memory => {
-                                let contents = Self::load_section(&index_row, &mut file)?;
-
-                                if let Ok(DumpSection::Memory(memory)) =
-                                    parse_section(&contents, Some(&id))
-                                {
-                                    crash_dump.memory = memory;
-                                }
-                            }
 
                             Tag::Proc => {
                                 let contents = Self::load_section(&index_row, &mut file)?;
@@ -455,7 +451,7 @@ impl CrashDump {
                     }
                 }
                 IndexValue::List(index_rows) => {
-                    for _index_row in index_rows {
+                    for index_row in index_rows {
                         match tag {
                             // Tag::Fun => {
                             //     let contents = Self::load_section(index_row, &mut file)?;
@@ -465,6 +461,15 @@ impl CrashDump {
                             //         crash_dump.some_vector_section.push(section);
                             //     }
                             // }
+                            Tag::Memory => {
+                                let contents = Self::load_section(&index_row, &mut file)?;
+
+                                if let Ok(DumpSection::Memory(memory)) =
+                                    parse_section(&contents, None)
+                                {
+                                    crash_dump.memory = memory;
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -624,8 +629,7 @@ impl ProcInfo {
     pub fn format(&self) -> String {
         format!(
             "Pid: {}\nState: {}\nName: {}\nSpawned As: {}\nSpawned By: {}\nMessage Queue Length: {}\nNumber of Heap Fragments: {}\nHeap Fragment Data: {}\nLink List: {:#?}\nReductions: {}\nStack Heap: {}\nOld Heap: {}\nHeap Unused: {}\nOld Heap Unused: {}\nBin Vheap: {}\nOld Bin Vheap: {}\nBin Vheap
-Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\nProgram Counter:
-{:#?}\nInternal State: {:#?}",
+Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\n{:#?}\nInternal State: {:#?}",
             self.pid, self.state, self.name, self.spawned_as, self.spawned_by, self.message_queue_length, self.number_of_heap_fragments, self.heap_fragment_data, self.link_list, self.reductions, self.stack_heap, self.old_heap, self.heap_unused, self.old_heap_unused, self.bin_vheap, self.old_bin_vheap, self.bin_vheap_unused, self.old_bin_vheap_unused, self.memory, self.arity, self.program_counter, self.internal_state
         )
     }
