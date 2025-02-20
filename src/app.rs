@@ -52,10 +52,10 @@ pub enum SelectedTab {
     General,
     #[strum(to_string = "Index")]
     Index,
-    #[strum(to_string = "Process Information")]
-    Process,
-    #[strum(to_string = "Binary Information")]
-    Binary,
+    #[strum(to_string = "Process Group Info")]
+    ProcessGroup,
+    #[strum(to_string = "Process Info")]
+    Process
 }
 
 impl Default for App {
@@ -94,9 +94,22 @@ impl App {
         let crash_dump = parser.parse().unwrap();
         ret.crash_dump = crash_dump;
 
+        let mut crash_dump = &ret.crash_dump.processes;
+        let tree = parser::CDParser::build_process_tree(crash_dump);
+        println!("{tree:#?}");
+
         // set the process list to be a tuple of [pid, name, heap_size, msgq_len]
         // we need to be able to sort an array based on the msgqlength as well
         ret.tab_lists.get_mut(&SelectedTab::Process).map(|val| {
+            *val = ret
+                .crash_dump
+                .processes
+                .keys()
+                .cloned()
+                .collect::<Vec<String>>();
+        });
+
+        ret.tab_lists.get_mut(&SelectedTab::ProcessGroup).map(|val| {
             *val = ret
                 .crash_dump
                 .processes
@@ -113,6 +126,12 @@ impl App {
 
         if let Some(state) = ret.list_states.get_mut(&SelectedTab::Process) {
             if !ret.tab_lists[&SelectedTab::Process].is_empty() {
+                state.select(Some(0));
+            }
+        }
+
+        if let Some(state) = ret.list_states.get_mut(&SelectedTab::ProcessGroup) {
+            if !ret.tab_lists[&SelectedTab::Index].is_empty() {
                 state.select(Some(0));
             }
         }
@@ -167,7 +186,7 @@ impl Widget for &mut App {
             SelectedTab::General => self.selected_tab.render_general(inner_area, buf, self),
             SelectedTab::Index => self.selected_tab.render_index(inner_area, buf, self),
             SelectedTab::Process => self.selected_tab.render_process(inner_area, buf, self),
-            SelectedTab::Binary => self.selected_tab.render_binary(inner_area, buf, self),
+            SelectedTab::ProcessGroup => self.selected_tab.render_process_group(inner_area, buf, self),
         }
         render_footer(footer_area, buf);
     }
@@ -332,11 +351,53 @@ impl SelectedTab {
         StatefulWidget::render(list, outer_layout[0], buf, process_list_state);
     }
 
-    fn render_binary(self, area: Rect, buf: &mut Buffer, _app: &App) {
-        Paragraph::new("This is the third tab!")
-            .block(self.block())
-            .render(area, buf);
+    fn render_process_group(self, area: Rect, buf: &mut Buffer, app: &mut App) {
+        let outer_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+
+        // split the second side into the info side
+        let inner_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
+            .split(outer_layout[1]);
+
+        let process_list_state = app.list_states.get_mut(&SelectedTab::ProcessGroup).unwrap();
+        let list_items: Vec<ListItem> = app.tab_lists[&SelectedTab::ProcessGroup]
+            .iter()
+            .map(|i| ListItem::new::<&str>(i.as_ref()))
+            .collect();
+
+        let selected_item = process_list_state.selected().unwrap_or(0);
+        let selected_pid = &app.tab_lists[&SelectedTab::ProcessGroup][selected_item];
+        let selected_process = app.crash_dump.processes.get(selected_pid).unwrap();
+
+        let binding = SelectedTab::Process.to_string();
+        let list = List::new(list_items)
+            .block(Block::bordered().title(binding.as_str()))
+            .highlight_symbol(">>")
+            .repeat_highlight_symbol(true)
+            .highlight_style(Style::default().bg(Color::Blue));
+
+        let process_info_text = match selected_process {
+            InfoOrIndex::Info(proc_info) => {
+                // Call the `format` method on the `ProcInfo` instance
+                proc_info.format()
+            }
+            InfoOrIndex::Index(_) => unreachable!(),
+        };
+
+        let detail_block = Paragraph::new(process_info_text)
+            .block(Block::bordered().title("Process Details"))
+            .style(Style::default().fg(Color::White))
+            .alignment(Alignment::Left);
+
+        Widget::render(&Paragraph::new("TEST 1"), inner_layout[0], buf);
+        Widget::render(&detail_block, inner_layout[1], buf);
+        StatefulWidget::render(list, outer_layout[0], buf, process_list_state);    
     }
+
 
     /// A block surrounding the tab's content
     fn block(self) -> Block<'static> {
@@ -351,7 +412,7 @@ impl SelectedTab {
             Self::General => tailwind::BLUE,
             Self::Index => tailwind::TEAL,
             Self::Process => tailwind::EMERALD,
-            Self::Binary => tailwind::INDIGO,
+            Self::ProcessGroup => tailwind::INDIGO,
         }
     }
 }

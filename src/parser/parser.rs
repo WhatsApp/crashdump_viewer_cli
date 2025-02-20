@@ -10,6 +10,8 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 struct IndexSink {
     matches: Vec<(Tag, Option<String>, u64)>,
@@ -85,7 +87,6 @@ impl CDParser {
     // at the end there will be a big struct that contains all the sections
     // enrich as needed
 
-    // TODO: fix this to accomodate a vector
     pub fn build_index(&self) -> Result<IndexMap, io::Error> {
         let matcher = RegexMatcher::new(r"^=.*").unwrap();
         let mut searcher = SearcherBuilder::new()
@@ -185,6 +186,29 @@ impl CDParser {
         let crash_dump = CrashDump::from_index_map(&index_map, &self.filepath);
 
         crash_dump
+    }
+
+    pub fn build_process_tree(processes: &HashMap<String, InfoOrIndex<ProcInfo>>) -> HashMap<String, Rc<RefCell<ProcInfo>>> {
+        let mut process_map: HashMap<String, Rc<RefCell<ProcInfo>>> = HashMap::new();
+        // Create Rc<RefCell<ProcInfo>> for each process and store in map
+        for (pid, info_or_index) in processes {
+            if let InfoOrIndex::Info(proc) = info_or_index {
+                let proc_rc = Rc::new(RefCell::new(proc.clone()));
+                process_map.insert(pid.clone(), proc_rc);
+            }
+        }
+        // Establish parent-child relationships
+        for proc_rc in process_map.values() {
+            if let Some(parent_pid) = &proc_rc.borrow().spawned_by {
+                if let Some(parent_rc) = process_map.get(parent_pid) {
+                    parent_rc.borrow_mut().children.push(Rc::clone(proc_rc));
+                }
+            }
+        }
+        for proc_rc in process_map.values() {
+            proc_rc.borrow_mut().calculate_group_info();
+        }
+        process_map
     }
 
     fn split_path_and_filename(filepath: &str) -> Result<(PathBuf, String), io::Error> {
