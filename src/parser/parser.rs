@@ -182,11 +182,28 @@ impl CDParser {
     }
 
     // after building the IndexMap, we can iterate through it and deserialize into the CrashDump struct
-    pub fn parse(&mut self) -> io::Result<CrashDump> {
+    pub fn parse(&self) -> io::Result<CrashDump> {
         let index_map = self.build_index()?;
         let crash_dump = CrashDump::from_index_map(&index_map, &self.filepath);
 
         crash_dump
+    }
+
+    pub fn get_heap_info(
+        &self,
+        crash_dump: &CrashDump,
+        filepath: &String,
+        id: &str,
+    ) -> io::Result<String> {
+        // seeks to the file using the byteoffsets in the dict and just retrives the raw data
+        //println!("{:?}", filepath);
+        //println!("{:?}, {:#?}", id, crash_dump.processes_heap.get(id));
+        if let Some(InfoOrIndex::Index(heap_index)) = crash_dump.processes_heap.get(id) {
+            let mut file = File::open(filepath.clone())?;
+
+            return CrashDump::load_section(heap_index, &mut file);
+        }
+        Ok("".to_string())
     }
 
     pub fn calculate_group_info(

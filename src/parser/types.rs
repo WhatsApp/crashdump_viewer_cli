@@ -268,7 +268,7 @@ fn parse_section(s: &str, id: Option<&str>) -> Result<DumpSection, String> {
                 .map(|s| ProgramCounter::from_string(s))
                 .unwrap_or_default();
 
-            let proc = ProcInfo {
+            let mut proc = ProcInfo {
                 pid: id,
                 state: data["State"].clone(),
                 name: Some(
@@ -295,10 +295,13 @@ fn parse_section(s: &str, id: Option<&str>) -> Result<DumpSection, String> {
                 memory: data["Memory"].parse::<i64>().unwrap_or(0),
                 bin_vheap_unused: data["BinVHeap unused"].parse::<i64>().unwrap_or(0),
                 old_bin_vheap_unused: data["OldBinVHeap unused"].parse::<i64>().unwrap_or(0),
+                total_bin_vheap: 0,
                 //arity: raw_lines[0].split("=").last().unwrap().parse::<i64>().unwrap(),
                 arity: 0,
                 internal_state: internal_state,
             };
+
+            proc.total_bin_vheap = proc.bin_vheap + proc.old_bin_vheap;
 
             DumpSection::Proc(proc)
         }
@@ -454,6 +457,12 @@ impl CrashDump {
                                         .processes
                                         .insert(id.clone(), InfoOrIndex::Info(proc));
                                 }
+                            }
+
+                            Tag::ProcHeap => {
+                                crash_dump
+                                    .processes_heap
+                                    .insert(id.clone(), InfoOrIndex::Index(index_row.clone()));
                             }
 
                             _ => {}
@@ -622,6 +631,7 @@ pub struct ProcInfo {
     pub old_bin_vheap: i64,
     pub bin_vheap_unused: i64,
     pub old_bin_vheap_unused: i64,
+    pub total_bin_vheap: i64,
     pub memory: i64,
     pub arity: i64,
     pub program_counter: ProgramCounter,
@@ -637,6 +647,33 @@ Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\n{:#?}\nInternal Sta
             self.bin_vheap_unused, self.old_bin_vheap_unused, self.memory, self.arity,
             self.program_counter, self.internal_state
         )
+    }
+    pub fn headers() -> [&'static str; 9] {
+        [
+            "OldBinVHeap",
+            "Pid",
+            "Name",
+            "Memory",
+            "TotalBinVHeap",
+            "BinVHeap",
+            "BinVHeap unused",
+            "OldBinVHeap",
+            "OldBinVHeap Unused",
+        ]
+    }
+
+    pub fn ref_array(&self) -> [String; 9] {
+        [
+            format!("{}", self.old_bin_vheap),
+            self.pid.clone(),
+            self.name.clone().unwrap_or_default(),
+            format!("{}", self.memory),
+            format!("{}", self.bin_vheap + self.old_bin_vheap),
+            format!("{}", self.bin_vheap),
+            format!("{}", self.bin_vheap_unused),
+            format!("{}", self.old_bin_vheap),
+            format!("{}", self.old_bin_vheap_unused),
+        ]
     }
 }
 
@@ -695,19 +732,19 @@ impl ProgramCounter {
     }
 }
 
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct ProcHeapInfo {
     pub pid: String,
     pub entries: HashMap<String, HeapEntry>,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct HeapEntry {
     pub address: String,
     pub type_: String,
     pub contents: Vec<Value>,
     pub raw: String,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct Value {
     pub type_: ValueType,
     pub raw: String,
@@ -715,7 +752,7 @@ pub struct Value {
     pub atom: Option<String>,
     pub heap_ref: Option<String>,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub enum ValueType {
     IntegerValue,
     AtomValue,

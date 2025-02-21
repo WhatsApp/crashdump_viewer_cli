@@ -14,6 +14,7 @@ use ratatui::{
 };
 use std::collections::HashMap;
 use std::error;
+use std::io;
 use strum::IntoEnumIterator;
 use strum_macros::{Display, EnumIter, FromRepr};
 
@@ -86,6 +87,7 @@ impl App {
         let idx = parser.build_index().unwrap();
 
         let mut ret = Self::default();
+        ret.filepath = filepath.clone();
         ret.index_map = idx.clone();
 
         // store the index
@@ -107,14 +109,25 @@ impl App {
         // set the process list to be a tuple of [pid, name, heap_size, msgq_len]
         // we need to be able to sort an array based on the msgqlength as well
 
+        let mut sorted_keys = ret
+            .crash_dump
+            .processes
+            .iter()
+            .collect::<Vec<(&String, &InfoOrIndex<ProcInfo>)>>();
+        sorted_keys.sort_by(|a, b| match (a.1, b.1) {
+            (InfoOrIndex::Info(proc_info_a), InfoOrIndex::Info(proc_info_b)) => proc_info_b
+                .total_bin_vheap
+                .cmp(&proc_info_a.total_bin_vheap),
+            _ => unreachable!(),
+        });
+
+        let sorted_key_list = sorted_keys
+            .into_iter()
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<String>>();
+
         ret.tab_lists.get_mut(&SelectedTab::Process).map(|val| {
-            *val = ret
-                .crash_dump
-                .processes
-                .keys()
-                .cloned()
-                .collect::<Vec<String>>();
-            val.sort();
+            *val = sorted_key_list;
         });
 
         // ret.tab_lists
@@ -134,14 +147,14 @@ impl App {
             .group_info_map
             .iter()
             .collect::<Vec<(&String, &GroupInfo)>>();
-        
+
         sorted_keys.sort_by(|a, b| b.1.total_memory_size.cmp(&a.1.total_memory_size));
-        
+
         let sorted_key_list = sorted_keys
             .into_iter()
             .map(|(key, _)| key.clone())
             .collect::<Vec<String>>();
-        
+
         ret.tab_lists
             .get_mut(&SelectedTab::ProcessGroup)
             .map(|val| {
@@ -183,6 +196,11 @@ impl App {
 
     pub fn prev_tab(&mut self) {
         self.selected_tab = self.selected_tab.previous()
+    }
+
+    pub fn get_heap_info(&self, pid: &str) -> io::Result<String> {
+        self.parser
+            .get_heap_info(&self.crash_dump, &self.filepath, pid)
     }
 }
 
@@ -326,49 +344,100 @@ impl SelectedTab {
 
     fn render_process(self, area: Rect, buf: &mut Buffer, app: &mut App) {
         let outer_layout = Layout::default()
-            .direction(Direction::Horizontal)
+            .direction(Direction::Vertical)
             .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
 
         // split the second side into the info side
         let inner_layout = Layout::default()
-            .direction(Direction::Vertical)
+            .direction(Direction::Horizontal)
             .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
             .split(outer_layout[1]);
 
-        let process_table_state = app.table_states.get_mut(&SelectedTab::Process).unwrap();
-        let list_items: Vec<ListItem> = app.tab_lists[&SelectedTab::Process]
-            .iter()
-            .map(|i| ListItem::new::<&str>(i.as_ref()))
-            .collect();
+        let group_table_state = app
+            .table_states
+            .get_mut(&SelectedTab::ProcessGroup)
+            .unwrap();
 
-        let selected_item = process_table_state.selected().unwrap_or(0);
+        let header_style = Style::default().fg(Color::White).bg(Color::Red);
+        let selected_row_style = Style::default().fg(Color::White);
+        let selected_col_style = Style::default().fg(Color::White);
+        let selected_cell_style = Style::default().fg(Color::White);
+
+        let header = ProcInfo::headers()
+            .into_iter()
+            .map(Cell::from)
+            .collect::<Row>()
+            .style(header_style)
+            .height(1);
+
+        let rows = app.tab_lists[&SelectedTab::Process].iter().map(|pid| {
+            match app.crash_dump.processes.get(pid).unwrap() {
+                InfoOrIndex::Info(proc_info) => {
+                    let item = proc_info.ref_array();
+                    Row::new(item)
+                }
+                _ => {
+                    unreachable!();
+                }
+            }
+        });
+
+        let binding = SelectedTab::Process.to_string();
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(15),
+                Constraint::Length(25),
+                Constraint::Length(25),
+                Constraint::Length(25),
+                Constraint::Length(25),
+                Constraint::Length(25),
+                Constraint::Length(25),
+                Constraint::Length(25),
+                Constraint::Length(25),
+            ],
+        )
+        .header(header)
+        .row_highlight_style(selected_row_style)
+        .column_highlight_style(selected_col_style)
+        .cell_highlight_style(selected_cell_style)
+        .highlight_spacing(HighlightSpacing::Always)
+        .block(Block::bordered().title(binding.as_str()))
+        .highlight_style(Style::default().bg(Color::Blue));
+
+        let process_table_state = app.table_states.get_mut(&SelectedTab::Process).unwrap();
+
+        let selected_item;
+        {
+            let process_table_state = app.table_states.get_mut(&SelectedTab::Process).unwrap();
+            selected_item = process_table_state.selected().unwrap_or(0);
+            StatefulWidget::render(table, outer_layout[0], buf, process_table_state);
+        }
+
         let selected_pid = &app.tab_lists[&SelectedTab::Process][selected_item];
         let selected_process = app.crash_dump.processes.get(selected_pid).unwrap();
 
-        let binding = SelectedTab::Process.to_string();
-        let list = List::new(list_items)
-            .block(Block::bordered().title(binding.as_str()))
-            .highlight_symbol(">>")
-            .repeat_highlight_symbol(true)
-            .highlight_style(Style::default().bg(Color::Blue));
-
         let process_info_text = match selected_process {
-            InfoOrIndex::Info(proc_info) => {
-                // Call the `format` method on the `ProcInfo` instance
-                proc_info.format()
-            }
+            InfoOrIndex::Info(proc_info) => proc_info.format(),
             InfoOrIndex::Index(_) => unreachable!(),
         };
+
+        let heap_info_text = app.get_heap_info(selected_pid).unwrap();
+        //println!("heap info text: {}", heap_info_text);
 
         let detail_block = Paragraph::new(process_info_text)
             .block(Block::bordered().title("Process Details"))
             .style(Style::default().fg(Color::White))
             .alignment(Alignment::Left);
 
-        Widget::render(&Paragraph::new("TEST 1"), inner_layout[0], buf);
-        Widget::render(&detail_block, inner_layout[1], buf);
-        StatefulWidget::render(list, outer_layout[0], buf, process_list_state);
+        let proc_heap = Paragraph::new(heap_info_text)
+            .block(Block::bordered().title("Process Heap"))
+            .style(Style::default().fg(Color::White))
+            .alignment(Alignment::Left);
+
+        Widget::render(&detail_block, inner_layout[0], buf);
+        Widget::render(&proc_heap, inner_layout[1], buf);
     }
 
     fn render_process_group(self, area: Rect, buf: &mut Buffer, app: &mut App) {
