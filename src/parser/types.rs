@@ -1,15 +1,16 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::borrow::BorrowMut;
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::str::FromStr;
 use std::time::SystemTime;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 pub const TAG_PREAMBLE: &str = "erl_crash_dump";
 pub const TAG_ABORT: &str = "abort";
@@ -267,39 +268,38 @@ fn parse_section(s: &str, id: Option<&str>) -> Result<DumpSection, String> {
                 .map(|s| ProgramCounter::from_string(s))
                 .unwrap_or_default();
 
-                let proc = ProcInfo {
-                    pid: id,
-                    state: data["State"].clone(),
-                    name: data
-                        .get("Name")
+            let proc = ProcInfo {
+                pid: id,
+                state: data["State"].clone(),
+                name: Some(
+                    data.get("Name")
                         .map(|s| s.clone())
                         .unwrap_or("".to_string()),
-                    
-                    spawned_as: data.get("Spawned as").cloned().filter(|s| !s.is_empty()),
-                    spawned_by: data.get("Spawned by").cloned().filter(|s| !s.is_empty()),
-                    
-                    message_queue_length: data["Message queue length"].parse::<i64>().unwrap_or(0),
-                    number_of_heap_fragments: data["Number of heap fragments"].parse().unwrap_or(0),
-                    heap_fragment_data: data["Heap fragment data"].parse().unwrap_or(0),
-                    link_list: link_list,
-                    program_counter: program_counter.unwrap_or_default(),
-                    reductions: data["Reductions"].parse::<i64>().unwrap_or(0),
-                    stack_heap: data["Stack+heap"].parse::<i64>().unwrap_or(0),
-                    old_heap: data["OldHeap"].parse::<i64>().unwrap_or(0),
-                    heap_unused: data["Heap unused"].parse::<i64>().unwrap_or(0),
-                    old_heap_unused: data["OldHeap unused"].parse::<i64>().unwrap_or(0),
-                    bin_vheap: data["BinVHeap"].parse::<i64>().unwrap_or(0),
-                    old_bin_vheap: data["OldBinVHeap"].parse::<i64>().unwrap_or(0),
-                    memory: data["Memory"].parse::<i64>().unwrap_or(0),
-                    bin_vheap_unused: data["BinVHeap unused"].parse::<i64>().unwrap_or(0),
-                    old_bin_vheap_unused: data["OldBinVHeap unused"].parse::<i64>().unwrap_or(0),
-                    //arity: raw_lines[0].split("=").last().unwrap().parse::<i64>().unwrap(),
-                    arity: 0,
-                    internal_state: internal_state,
-                    group_info: GroupInfo::default(),
-                    children: vec![]
-                };
-                
+                ),
+
+                spawned_as: data.get("Spawned as").cloned().filter(|s| !s.is_empty()),
+                spawned_by: data.get("Spawned by").cloned().filter(|s| !s.is_empty()),
+
+                message_queue_length: data["Message queue length"].parse::<i64>().unwrap_or(0),
+                number_of_heap_fragments: data["Number of heap fragments"].parse().unwrap_or(0),
+                heap_fragment_data: data["Heap fragment data"].parse().unwrap_or(0),
+                link_list: link_list,
+                program_counter: program_counter.unwrap_or_default(),
+                reductions: data["Reductions"].parse::<i64>().unwrap_or(0),
+                stack_heap: data["Stack+heap"].parse::<i64>().unwrap_or(0),
+                old_heap: data["OldHeap"].parse::<i64>().unwrap_or(0),
+                heap_unused: data["Heap unused"].parse::<i64>().unwrap_or(0),
+                old_heap_unused: data["OldHeap unused"].parse::<i64>().unwrap_or(0),
+                bin_vheap: data["BinVHeap"].parse::<i64>().unwrap_or(0),
+                old_bin_vheap: data["OldBinVHeap"].parse::<i64>().unwrap_or(0),
+                memory: data["Memory"].parse::<i64>().unwrap_or(0),
+                bin_vheap_unused: data["BinVHeap unused"].parse::<i64>().unwrap_or(0),
+                old_bin_vheap_unused: data["OldBinVHeap unused"].parse::<i64>().unwrap_or(0),
+                //arity: raw_lines[0].split("=").last().unwrap().parse::<i64>().unwrap(),
+                arity: 0,
+                internal_state: internal_state,
+            };
+
             DumpSection::Proc(proc)
         }
 
@@ -372,6 +372,7 @@ pub struct CrashDump {
     pub loaded_modules: Vec<InfoOrIndex<LoadedModules>>,
     pub persistent_terms: Vec<InfoOrIndex<PersistentTermInfo>>,
     pub raw_sections: HashMap<String, Vec<u8>>,
+    pub group_info_map: HashMap<String, GroupInfo>,
 }
 
 impl CrashDump {
@@ -408,6 +409,7 @@ impl CrashDump {
             loaded_modules: vec![],
             persistent_terms: vec![],
             raw_sections: HashMap::new(),
+            group_info_map: HashMap::new(),
         }
     }
 
@@ -427,6 +429,8 @@ impl CrashDump {
     pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
         let mut crash_dump = CrashDump::new();
         let mut file = File::open(file_path)?;
+        // let mut child_map: HashMap<String, Vec<String>> = HashMap::new();
+
         for (tag, index_value) in index_map {
             match index_value {
                 IndexValue::Map(inner_map) => {
@@ -459,14 +463,6 @@ impl CrashDump {
                 IndexValue::List(index_rows) => {
                     for index_row in index_rows {
                         match tag {
-                            // Tag::Fun => {
-                            //     let contents = Self::load_section(index_row, &mut file)?;
-                            //     if let Ok(DumpSection::Fun(section)) = parse_section(&contents) {
-                            //         // Handle the vector section
-                            //         // For example, you might want to append to a vector in crash_dump
-                            //         crash_dump.some_vector_section.push(section);
-                            //     }
-                            // }
                             Tag::Memory => {
                                 let contents = Self::load_section(&index_row, &mut file)?;
 
@@ -610,7 +606,7 @@ pub struct NodeInfo {
 pub struct ProcInfo {
     pub pid: String,
     pub state: String,
-    pub name: String,
+    pub name: Option<String>,
     pub spawned_as: Option<String>,
     pub spawned_by: Option<String>,
     pub message_queue_length: i64,
@@ -630,41 +626,51 @@ pub struct ProcInfo {
     pub arity: i64,
     pub program_counter: ProgramCounter,
     pub internal_state: Vec<String>,
-    #[serde(skip)]
-    pub children: Vec<Rc<RefCell<ProcInfo>>>,
-    pub group_info: GroupInfo,
-
 }
+
 impl ProcInfo {
     pub fn format(&self) -> String {
         format!(
-            "Pid: {}\nState: {}\nName: {}\nSpawned As: {:#?}\nSpawned By: {:#?}\nMessage Queue Length: {}\nNumber of Heap Fragments: {}\nHeap Fragment Data: {}\nLink List: {:#?}\nReductions: {}\nStack Heap: {}\nOld Heap: {}\nHeap Unused: {}\nOld Heap Unused: {}\nBin Vheap: {}\nOld Bin Vheap: {}\nBin Vheap
+            "Pid: {}\nState: {}\nName: {:#?}\nSpawned As: {:#?}\nSpawned By: {:#?}\nMessage Queue Length: {}\nNumber of Heap Fragments: {}\nHeap Fragment Data: {}\nLink List: {:#?}\nReductions: {}\nStack Heap: {}\nOld Heap: {}\nHeap Unused: {}\nOld Heap Unused: {}\nBin Vheap: {}\nOld Bin Vheap: {}\nBin Vheap
 Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\n{:#?}\nInternal State: {:#?}",
-            self.pid, self.state, self.name, self.spawned_as, self.spawned_by, self.message_queue_length, self.number_of_heap_fragments, self.heap_fragment_data, self.link_list, self.reductions, self.stack_heap, self.old_heap, self.heap_unused, self.old_heap_unused, self.bin_vheap, self.old_bin_vheap, self.bin_vheap_unused, self.old_bin_vheap_unused, self.memory, self.arity, self.program_counter, self.internal_state
+            self.pid, self.state, self.name, self.spawned_as, self.spawned_by, self.message_queue_length, self.number_of_heap_fragments, self.heap_fragment_data, self.link_list, self.reductions, self.stack_heap, self.old_heap, self.heap_unused, self.old_heap_unused, self.bin_vheap, self.old_bin_vheap,
+            self.bin_vheap_unused, self.old_bin_vheap_unused, self.memory, self.arity,
+            self.program_counter, self.internal_state
         )
-    }
-
-    pub fn calculate_group_info(&mut self) {
-        let mut total_heap_size = self.stack_heap + self.old_heap + self.heap_unused + self.old_heap_unused;
-        let mut total_binary_size = self.bin_vheap + self.old_bin_vheap + self.bin_vheap_unused + self.old_bin_vheap_unused;
-        for child in &self.children {
-            let mut desc = child.borrow_mut();
-            desc.calculate_group_info();
-            total_heap_size += desc.group_info.total_heap_size;
-            total_binary_size += desc.group_info.total_binary_size;
-        }
-        self.group_info = GroupInfo {
-            total_heap_size,
-            total_binary_size,
-        };
     }
 }
 
-
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
-pub struct GroupInfo{
+pub struct GroupInfo {
     pub total_heap_size: i64,
-    pub total_binary_size: i64
+    pub total_binary_size: i64,
+    pub total_memory_size: i64,
+    pub pid: String,
+    pub name: String,
+    pub children: Vec<String>,
+}
+
+impl GroupInfo {
+    pub fn format(&self) -> String {
+        format!(
+            "{}\t{}\t{}\t{}",
+            self.total_memory_size,
+            self.pid,
+            self.name,
+            self.children.len()
+        )
+    }
+    pub fn headers() -> [&'static str; 4] {
+        ["Total Memory Size", "Pid", "Name", "Children Count"]
+    }
+    pub fn ref_array(&self) -> [String; 4] {
+        [
+            format!("{}", self.total_memory_size),
+            self.pid.clone(),
+            self.name.clone(),
+            format!("{}", self.children.len()),
+        ]
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]

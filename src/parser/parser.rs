@@ -4,6 +4,8 @@ use grep::{
     searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch},
 };
 use rayon::prelude::*;
+use std::borrow::BorrowMut;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
@@ -11,7 +13,6 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::cell::RefCell;
 
 struct IndexSink {
     matches: Vec<(Tag, Option<String>, u64)>,
@@ -44,7 +45,7 @@ impl Sink for IndexSink {
 
             let tag_id_string = if match_bytes.len() > tag_end + 1 {
                 let tag_id_cow = String::from_utf8_lossy(&match_bytes[tag_end + 1..]);
-                Some(tag_id_cow.into_owned())
+                Some(tag_id_cow.trim().to_string())
             } else {
                 None
             };
@@ -188,27 +189,119 @@ impl CDParser {
         crash_dump
     }
 
-    pub fn build_process_tree(processes: &HashMap<String, InfoOrIndex<ProcInfo>>) -> HashMap<String, Rc<RefCell<ProcInfo>>> {
-        let mut process_map: HashMap<String, Rc<RefCell<ProcInfo>>> = HashMap::new();
-        // Create Rc<RefCell<ProcInfo>> for each process and store in map
-        for (pid, info_or_index) in processes {
-            if let InfoOrIndex::Info(proc) = info_or_index {
-                let proc_rc = Rc::new(RefCell::new(proc.clone()));
-                process_map.insert(pid.clone(), proc_rc);
+    pub fn calculate_group_info(
+        ancestor_map: &HashMap<String, Vec<String>>,
+        processes: &HashMap<String, InfoOrIndex<ProcInfo>>,
+    ) -> HashMap<String, GroupInfo> {
+        // for each child pid, look it up in the processes section. If it exists, then add its sizes
+        let mut group_info_map = HashMap::new();
+
+        for (pid, children) in ancestor_map {
+            let mut group_info = GroupInfo {
+                total_heap_size: 0,
+                total_binary_size: 0,
+                total_memory_size: 0,
+                pid: pid.clone(),
+                name: "".to_string(),
+                children: children.clone(),
+            };
+            for child in children {
+                if let Some(InfoOrIndex::Info(proc)) = processes.get(child) {
+                    group_info.total_heap_size += proc.old_bin_vheap + proc.bin_vheap;
+                    group_info.total_heap_size += proc.stack_heap + proc.old_heap;
+                    group_info.total_memory_size += proc.memory;
+                }
             }
+
+            if let Some(InfoOrIndex::Info(proc)) = processes.get(pid) {
+                group_info.total_heap_size += proc.old_bin_vheap + proc.bin_vheap;
+                group_info.total_heap_size += proc.stack_heap + proc.old_heap;
+                group_info.total_memory_size += proc.memory;
+                if let Some(pid_name) = &proc.name {
+                    group_info.name = pid_name.clone();
+                }
+            }
+
+            group_info_map.insert(pid.clone(), group_info);
         }
-        // Establish parent-child relationships
-        for proc_rc in process_map.values() {
-            if let Some(parent_pid) = &proc_rc.borrow().spawned_by {
-                if let Some(parent_rc) = process_map.get(parent_pid) {
-                    parent_rc.borrow_mut().children.push(Rc::clone(proc_rc));
+        group_info_map
+    }
+
+    // // takes in a process map and finds the largest N process groups, based on the GroupInfo struct
+    // pub fn get_top_n_process_groups(
+    //     processes: &HashMap<String, InfoOrIndex<ProcInfo>>,
+    //     top_n: usize,
+    // ) -> (Vec<String>, Vec<String>) {
+    //     let mut heap_size_groups: Vec<(String, i64)> = processes
+    //         .iter()
+    //         .filter_map(|(pid, info_or_index)| {
+    //             if let InfoOrIndex::Info(proc_info) = info_or_index {
+    //                 Some((pid.clone(), proc_info.group_info.total_heap_size))
+    //             } else {
+    //                 None
+    //             }
+    //         })
+    //         .collect();
+    //     let mut binary_size_groups: Vec<(String, i64)> = processes
+    //         .iter()
+    //         .filter_map(|(pid, info_or_index)| {
+    //             if let InfoOrIndex::Info(proc_info) = info_or_index {
+    //                 Some((pid.clone(), proc_info.group_info.total_binary_size))
+    //             } else {
+    //                 None
+    //             }
+    //         })
+    //         .collect();
+    //     heap_size_groups.sort_by(|a, b| b.1.cmp(&a.1));
+    //     binary_size_groups.sort_by(|a, b| b.1.cmp(&a.1));
+
+    //     let top_heap_size_pids = heap_size_groups
+    //         .into_iter()
+    //         .take(top_n)
+    //         .map(|(pid, _)| pid)
+    //         .collect();
+    //     let top_binary_size_pids = binary_size_groups
+    //         .into_iter()
+    //         .take(top_n)
+    //         .map(|(pid, _)| pid)
+    //         .collect();
+
+    //     (top_heap_size_pids, top_binary_size_pids)
+    // }
+
+    pub fn create_descendants_table(
+        all_processes_info: &HashMap<String, InfoOrIndex<ProcInfo>>,
+    ) -> HashMap<String, Vec<String>> {
+        let mut descendants: HashMap<String, Vec<String>> = HashMap::new();
+
+        for (pid, proc_info_or_index) in all_processes_info {
+            if let InfoOrIndex::Info(proc_info) = proc_info_or_index {
+                let mut ancestor = proc_info.spawned_by.clone();
+
+                // Navigate upwards to find the first ancestor with a name
+                while let Some(ref ancestor_pid) = ancestor {
+                    if let Some(ancestor_info) = all_processes_info.get(ancestor_pid.as_str()) {
+                        if let InfoOrIndex::Info(ancestor_proc) = ancestor_info {
+                            if ancestor_proc.name.is_some() {
+                                break;
+                            }
+                            ancestor = ancestor_proc.spawned_by.clone();
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                if let Some(ancestor_pid) = ancestor {
+                    descendants
+                        .entry(ancestor_pid)
+                        .or_insert_with(Vec::new)
+                        .push(pid.clone());
                 }
             }
         }
-        for proc_rc in process_map.values() {
-            proc_rc.borrow_mut().calculate_group_info();
-        }
-        process_map
+
+        descendants
     }
 
     fn split_path_and_filename(filepath: &str) -> Result<(PathBuf, String), io::Error> {

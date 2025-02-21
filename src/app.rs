@@ -8,8 +8,8 @@ use ratatui::{
     symbols,
     text::{Line, Span, Text},
     widgets::{
-        Block, List, ListDirection, ListItem, ListState, Padding, Paragraph, StatefulWidget, Tabs,
-        Widget,
+        Block, Cell, HighlightSpacing, List, ListDirection, ListItem, ListState, Padding,
+        Paragraph, Row, StatefulWidget, Table, TableState, Tabs, Widget,
     },
 };
 use std::collections::HashMap;
@@ -32,10 +32,12 @@ pub struct App {
     pub filepath: String,
     pub crash_dump: types::CrashDump,
     pub index_map: IndexMap,
+    pub ancestor_map: HashMap<String, Vec<String>>,
+
     /// process information list
     pub tab_lists: HashMap<SelectedTab, Vec<String>>,
 
-    pub list_states: HashMap<SelectedTab, ListState>,
+    pub table_states: HashMap<SelectedTab, TableState>,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -50,12 +52,12 @@ pub enum SelectedTab {
     #[default]
     #[strum(to_string = "General Information")]
     General,
-    #[strum(to_string = "Index")]
-    Index,
+    // #[strum(to_string = "Index")]
+    // Index,
     #[strum(to_string = "Process Group Info")]
     ProcessGroup,
     #[strum(to_string = "Process Info")]
-    Process
+    Process,
 }
 
 impl Default for App {
@@ -67,10 +69,11 @@ impl Default for App {
             filepath: "".to_string(),
             crash_dump: types::CrashDump::new(),
             index_map: IndexMap::new(),
+            ancestor_map: HashMap::new(),
             header: "ERL CRASH DUMP VIEWER".to_string(),
             tab_lists: HashMap::from_iter(SelectedTab::iter().map(|tab| (tab, vec![]))),
-            list_states: HashMap::from_iter(
-                SelectedTab::iter().map(|tab| (tab, ListState::default())),
+            table_states: HashMap::from_iter(
+                SelectedTab::iter().map(|tab| (tab, TableState::default())),
             ),
         }
     }
@@ -87,19 +90,23 @@ impl App {
 
         // store the index
         let idx_str = parser::CDParser::format_index(&idx);
-        ret.tab_lists.get_mut(&SelectedTab::Index).map(|val| {
-            *val = idx_str;
-        });
+        // ret.tab_lists.get_mut(&SelectedTab::Index).map(|val| {
+        //     *val = idx_str;
+        // });
 
         let crash_dump = parser.parse().unwrap();
         ret.crash_dump = crash_dump;
 
-        let mut crash_dump = &ret.crash_dump.processes;
-        let tree = parser::CDParser::build_process_tree(crash_dump);
-        println!("{tree:#?}");
+        ret.ancestor_map = parser::CDParser::create_descendants_table(&ret.crash_dump.processes);
+        // for every ancestor:<children> mapping, we need to calculate the GroupInfo for each one if the pid exists
+        let mut group_info =
+            parser::CDParser::calculate_group_info(&ret.ancestor_map, &ret.crash_dump.processes);
+        ret.crash_dump.group_info_map = group_info;
+        //    let all_processes = &mut ret.crash_dump.processes;
 
         // set the process list to be a tuple of [pid, name, heap_size, msgq_len]
         // we need to be able to sort an array based on the msgqlength as well
+
         ret.tab_lists.get_mut(&SelectedTab::Process).map(|val| {
             *val = ret
                 .crash_dump
@@ -107,31 +114,54 @@ impl App {
                 .keys()
                 .cloned()
                 .collect::<Vec<String>>();
+            val.sort();
         });
 
-        ret.tab_lists.get_mut(&SelectedTab::ProcessGroup).map(|val| {
-            *val = ret
-                .crash_dump
-                .processes
-                .keys()
-                .cloned()
-                .collect::<Vec<String>>();
-        });
+        // ret.tab_lists
+        //     .get_mut(&SelectedTab::ProcessGroup)
+        //     .map(|val| {
+        //         *val = ret
+        //             .crash_dump
+        //             .group_info_map
+        //             .keys()
+        //             .cloned()
+        //             .collect::<Vec<String>>();
+        //         val.sort();
+        //     });
 
-        if let Some(state) = ret.list_states.get_mut(&SelectedTab::Index) {
-            if !ret.tab_lists[&SelectedTab::Index].is_empty() {
-                state.select(Some(0));
-            }
-        }
+        let mut sorted_keys = ret
+            .crash_dump
+            .group_info_map
+            .iter()
+            .collect::<Vec<(&String, &GroupInfo)>>();
+        
+        sorted_keys.sort_by(|a, b| b.1.total_memory_size.cmp(&a.1.total_memory_size));
+        
+        let sorted_key_list = sorted_keys
+            .into_iter()
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<String>>();
+        
+        ret.tab_lists
+            .get_mut(&SelectedTab::ProcessGroup)
+            .map(|val| {
+                *val = sorted_key_list;
+            });
 
-        if let Some(state) = ret.list_states.get_mut(&SelectedTab::Process) {
+        // if let Some(state) = ret.table_states.get_mut(&SelectedTab::Index) {
+        //     if !ret.tab_lists[&SelectedTab::Index].is_empty() {
+        //         state.select(Some(0));
+        //     }
+        // }
+
+        if let Some(state) = ret.table_states.get_mut(&SelectedTab::Process) {
             if !ret.tab_lists[&SelectedTab::Process].is_empty() {
                 state.select(Some(0));
             }
         }
 
-        if let Some(state) = ret.list_states.get_mut(&SelectedTab::ProcessGroup) {
-            if !ret.tab_lists[&SelectedTab::Index].is_empty() {
+        if let Some(state) = ret.table_states.get_mut(&SelectedTab::ProcessGroup) {
+            if !ret.tab_lists[&SelectedTab::ProcessGroup].is_empty() {
                 state.select(Some(0));
             }
         }
@@ -184,9 +214,12 @@ impl Widget for &mut App {
         self.render_tabs(tabs_area, buf);
         match self.selected_tab {
             SelectedTab::General => self.selected_tab.render_general(inner_area, buf, self),
-            SelectedTab::Index => self.selected_tab.render_index(inner_area, buf, self),
+            //SelectedTab::Index => self.selected_tab.render_index(inner_area, buf, self),
             SelectedTab::Process => self.selected_tab.render_process(inner_area, buf, self),
-            SelectedTab::ProcessGroup => self.selected_tab.render_process_group(inner_area, buf, self),
+            SelectedTab::ProcessGroup => self
+                .selected_tab
+                .render_process_group(inner_area, buf, self),
+            _ => unreachable!(),
         }
         render_footer(footer_area, buf);
     }
@@ -207,18 +240,6 @@ impl SelectedTab {
         Self::from_repr(next_index).unwrap_or(self)
     }
 }
-
-// impl Widget for SelectedTab {
-//     fn render(self, area: Rect, buf: &mut Buffer) {
-//         // in a real app these might be separate widgets
-//         match self {
-//             Self::General => self.render_general(area, buf),
-//             Self::Index => self.render_index(area, buf),
-//             Self::Process => self.render_process(area, buf),
-//             Self::Binary => self.render_binary(area, buf),
-//         }
-//     }
-// }
 
 impl SelectedTab {
     /// Return tab's name as a styled `Line`
@@ -286,22 +307,22 @@ impl SelectedTab {
         Widget::render(&paragraph, area, buf);
     }
 
-    fn render_index(self, area: Rect, buf: &mut Buffer, app: &mut App) {
-        let index_list_state = app.list_states.get_mut(&SelectedTab::Index).unwrap();
-        let list_items: Vec<ListItem> = app.tab_lists[&SelectedTab::Index]
-            .iter()
-            .map(|i| ListItem::new::<&str>(i.as_ref()))
-            .collect();
+    // fn render_index(self, area: Rect, buf: &mut Buffer, app: &mut App) {
+    //     let index_list_state = app.list_states.get_mut(&SelectedTab::Index).unwrap();
+    //     let list_items: Vec<ListItem> = app.tab_lists[&SelectedTab::Index]
+    //         .iter()
+    //         .map(|i| ListItem::new::<&str>(i.as_ref()))
+    //         .collect();
 
-        let binding = SelectedTab::Index.to_string();
-        let list = List::new(list_items)
-            .block(Block::bordered().title(binding.as_str()))
-            .highlight_symbol(">>")
-            .repeat_highlight_symbol(true)
-            .highlight_style(Style::default().bg(Color::Blue));
+    //     let binding = SelectedTab::Index.to_string();
+    //     let list = List::new(list_items)
+    //         .block(Block::bordered().title(binding.as_str()))
+    //         .highlight_symbol(">>")
+    //         .repeat_highlight_symbol(true)
+    //         .highlight_style(Style::default().bg(Color::Blue));
 
-        StatefulWidget::render(list, area, buf, index_list_state);
-    }
+    //     StatefulWidget::render(list, area, buf, index_list_state);
+    // }
 
     fn render_process(self, area: Rect, buf: &mut Buffer, app: &mut App) {
         let outer_layout = Layout::default()
@@ -315,14 +336,13 @@ impl SelectedTab {
             .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
             .split(outer_layout[1]);
 
-
-        let process_list_state = app.list_states.get_mut(&SelectedTab::Process).unwrap();
+        let process_table_state = app.table_states.get_mut(&SelectedTab::Process).unwrap();
         let list_items: Vec<ListItem> = app.tab_lists[&SelectedTab::Process]
             .iter()
             .map(|i| ListItem::new::<&str>(i.as_ref()))
             .collect();
 
-        let selected_item = process_list_state.selected().unwrap_or(0);
+        let selected_item = process_table_state.selected().unwrap_or(0);
         let selected_pid = &app.tab_lists[&SelectedTab::Process][selected_item];
         let selected_process = app.crash_dump.processes.get(selected_pid).unwrap();
 
@@ -363,41 +383,80 @@ impl SelectedTab {
             .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
             .split(outer_layout[1]);
 
-        let process_list_state = app.list_states.get_mut(&SelectedTab::ProcessGroup).unwrap();
-        let list_items: Vec<ListItem> = app.tab_lists[&SelectedTab::ProcessGroup]
+        let group_table_state = app
+            .table_states
+            .get_mut(&SelectedTab::ProcessGroup)
+            .unwrap();
+
+        let header_style = Style::default().fg(Color::White).bg(Color::Red);
+        let selected_row_style = Style::default().fg(Color::White);
+        let selected_col_style = Style::default().fg(Color::White);
+        let selected_cell_style = Style::default().fg(Color::White);
+
+        let header = GroupInfo::headers()
+            .into_iter()
+            .map(Cell::from)
+            .collect::<Row>()
+            .style(header_style)
+            .height(1);
+
+        let rows = app.tab_lists[&SelectedTab::ProcessGroup]
             .iter()
-            .map(|i| ListItem::new::<&str>(i.as_ref()))
-            .collect();
+            .enumerate()
+            .map(|(i, group)| {
+                let group_info = app.crash_dump.group_info_map.get(group).unwrap();
+                let item = group_info.ref_array();
+                Row::new(item)
+            });
 
-        let selected_item = process_list_state.selected().unwrap_or(0);
+        let selected_item = group_table_state.selected().unwrap_or(0);
         let selected_pid = &app.tab_lists[&SelectedTab::ProcessGroup][selected_item];
-        let selected_process = app.crash_dump.processes.get(selected_pid).unwrap();
-
-        let binding = SelectedTab::Process.to_string();
-        let list = List::new(list_items)
-            .block(Block::bordered().title(binding.as_str()))
-            .highlight_symbol(">>")
-            .repeat_highlight_symbol(true)
-            .highlight_style(Style::default().bg(Color::Blue));
+        let selected_process = app.crash_dump.processes.get(selected_pid);
 
         let process_info_text = match selected_process {
-            InfoOrIndex::Info(proc_info) => {
-                // Call the `format` method on the `ProcInfo` instance
-                proc_info.format()
-            }
-            InfoOrIndex::Index(_) => unreachable!(),
+            Some(InfoOrIndex::Info(proc_info)) => proc_info.format(),
+            _ => "No process info found".to_string(),
         };
 
-        let detail_block = Paragraph::new(process_info_text)
-            .block(Block::bordered().title("Process Details"))
+        let group_info_text = match app.ancestor_map.get(selected_pid) {
+            Some(children) => {
+                format!("{:#?}", children)
+            }
+            _ => "No group info found".to_string(),
+        };
+
+        let binding = SelectedTab::Process.to_string();
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(30),
+                Constraint::Length(30),
+                Constraint::Length(30),
+                Constraint::Length(30),
+            ],
+        )
+        .header(header)
+        .row_highlight_style(selected_row_style)
+        .column_highlight_style(selected_col_style)
+        .cell_highlight_style(selected_cell_style)
+        .highlight_spacing(HighlightSpacing::Always)
+        .block(Block::bordered().title(binding.as_str()))
+        .highlight_style(Style::default().bg(Color::Blue));
+
+        let children_block = Paragraph::new(group_info_text)
+            .block(Block::bordered().title("Group Children"))
             .style(Style::default().fg(Color::White))
             .alignment(Alignment::Left);
 
-        Widget::render(&Paragraph::new("TEST 1"), inner_layout[0], buf);
-        Widget::render(&detail_block, inner_layout[1], buf);
-        StatefulWidget::render(list, outer_layout[0], buf, process_list_state);    
-    }
+        let detail_block = Paragraph::new(process_info_text)
+            .block(Block::bordered().title("Ancestor Details"))
+            .style(Style::default().fg(Color::White))
+            .alignment(Alignment::Left);
 
+        Widget::render(&children_block, inner_layout[0], buf);
+        Widget::render(&detail_block, inner_layout[1], buf);
+        StatefulWidget::render(&table, outer_layout[0], buf, group_table_state);
+    }
 
     /// A block surrounding the tab's content
     fn block(self) -> Block<'static> {
@@ -410,7 +469,7 @@ impl SelectedTab {
     const fn palette(self) -> tailwind::Palette {
         match self {
             Self::General => tailwind::BLUE,
-            Self::Index => tailwind::TEAL,
+            //Self::Index => tailwind::TEAL,
             Self::Process => tailwind::EMERALD,
             Self::ProcessGroup => tailwind::INDIGO,
         }

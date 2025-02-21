@@ -19,28 +19,26 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
         KeyCode::Char('h') | KeyCode::Left => app.prev_tab(),
 
         KeyCode::Down => {
-            // Get the ListState for the currently selected tab
-            if let Some(list_state) = app.list_states.get_mut(&app.selected_tab) {
-                if let Some(selected) = list_state.selected() {
+            if let Some(table_state) = app.table_states.get_mut(&app.selected_tab) {
+                if let Some(selected) = table_state.selected() {
                     let amount_items = app.tab_lists[&app.selected_tab].len();
                     if selected >= amount_items - 1 {
-                        list_state.select(Some(0));
+                        table_state.select(Some(0));
                     } else {
-                        list_state.select(Some(selected + 1));
+                        table_state.select(Some(selected + 1));
                     }
                 }
             }
         }
 
         KeyCode::Up => {
-            // Get the ListState for the currently selected tab
-            if let Some(list_state) = app.list_states.get_mut(&app.selected_tab) {
-                if let Some(selected) = list_state.selected() {
+            if let Some(table_state) = app.table_states.get_mut(&app.selected_tab) {
+                if let Some(selected) = table_state.selected() {
                     let amount_items = app.tab_lists[&app.selected_tab].len();
                     if selected > 0 {
-                        list_state.select(Some(selected - 1));
+                        table_state.select(Some(selected - 1));
                     } else {
-                        list_state.select(Some(amount_items - 1));
+                        table_state.select(Some(amount_items - 1));
                     }
                 }
             }
