@@ -14,19 +14,13 @@
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::borrow::BorrowMut;
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::str::FromStr;
-use std::time::SystemTime;
 
 pub const MAX_DEPTH_PARSE_DATATYPE: usize = 5;
-pub const MAX_BYTES_TO_PRINT_ON_A_BINARY: usize = 1024;
-pub const FIELD_BYTES: usize = 8;
 
 pub const TAG_PREAMBLE: &str = "erl_crash_dump";
 pub const TAG_ABORT: &str = "abort";
@@ -632,11 +626,10 @@ impl CrashDump {
     }
 
     fn parse_datatype(&self, data: &str, depth: usize) -> Result<String, String> {
-        const MAX_DEPTH_PARSE_DATATYPE: usize = 10;
-
         if depth > MAX_DEPTH_PARSE_DATATYPE {
             return Ok(format!("(*{})", data));
         }
+
         let depth = depth + 1;
         match data.chars().next() {
             Some('t') => self.parse_tuple(data, depth),
@@ -703,7 +696,7 @@ impl CrashDump {
     }
 
     fn parse_list(&self, data: &str, depth: usize) -> Result<String, String> {
-        let mut parts = data[1..].split('|'); // Remove 'l' and split by '|'
+        let parts = data[1..].split('|'); // Remove 'l' and split by '|'
         let parsed: Result<Vec<String>, String> =
             parts.map(|x| self.parse_datatype(x, depth)).collect();
 
@@ -716,7 +709,7 @@ impl CrashDump {
     }
 
     fn parse_bignum(&self, data: &str) -> Result<String, String> {
-        let sign = if data.starts_with("B-") { "-" } else { "" };
+        // let sign = if data.starts_with("B-") { "-" } else { "" };
         let number_str = if data.starts_with("B16#") || data.starts_with("B-16#") {
             &data[4..] // Skip "B16#" or "B-16#"
         } else {
@@ -960,7 +953,7 @@ impl CrashDump {
 
         // Extract the length and binary data
         let len_str = parts[0];
-        let binary_data = parts[1];
+        // let binary_data = parts[1];
 
         // Parse the length as an integer
         let len: usize = usize::from_str_radix(len_str, 16).map_err(|e| e.to_string())?;

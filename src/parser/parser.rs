@@ -17,16 +17,13 @@ use grep::{
     regex::RegexMatcher,
     searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch},
 };
-use rayon::prelude::*;
-use std::borrow::BorrowMut;
-use std::cell::RefCell;
+// use rayon::prelude::*;
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
-use std::rc::Rc;
 
 struct IndexSink {
     matches: Vec<(Tag, Option<String>, u64)>,

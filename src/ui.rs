@@ -13,11 +13,6 @@
 // limitations under the License.
 
 use ratatui::{
-    buffer::Buffer,
-    layout::{Alignment, Constraint, Layout, Rect},
-    style::{Color, Style},
-    text::Line,
-    widgets::{Block, BorderType, Paragraph, Widget},
     Frame,
 };
 

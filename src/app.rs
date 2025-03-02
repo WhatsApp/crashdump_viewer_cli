@@ -13,15 +13,13 @@
 // limitations under the License.
 
 use crate::parser::*;
-use color_eyre::Result;
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{palette::tailwind, Color, Style, Stylize},
-    symbols,
     text::{Line, Span, Text},
     widgets::{
-        Block, Cell, HighlightSpacing, List, ListDirection, ListItem, ListState, Padding,
+        Block, Cell, HighlightSpacing,
         Paragraph, Row, StatefulWidget, Table, TableState, Tabs, Widget,
     },
 };
@@ -96,7 +94,7 @@ impl Default for App {
 impl App {
     /// Constructs a new instance of [`App`].
     pub fn new(filepath: String) -> Self {
-        let mut parser = parser::CDParser::new(&filepath).unwrap();
+        let parser = parser::CDParser::new(&filepath).unwrap();
         let idx = parser.build_index().unwrap();
 
         let mut ret = Self::default();
@@ -104,7 +102,7 @@ impl App {
         ret.index_map = idx.clone();
 
         // store the index
-        let idx_str = parser::CDParser::format_index(&idx);
+        // let idx_str = parser::CDParser::format_index(&idx);
         // ret.tab_lists.get_mut(&SelectedTab::Index).map(|val| {
         //     *val = idx_str;
         // });
@@ -117,7 +115,7 @@ impl App {
 
         ret.ancestor_map = parser::CDParser::create_descendants_table(&ret.crash_dump.processes);
         // for every ancestor:<children> mapping, we need to calculate the GroupInfo for each one if the pid exists
-        let mut group_info =
+        let group_info =
             parser::CDParser::calculate_group_info(&ret.ancestor_map, &ret.crash_dump.processes);
         ret.crash_dump.group_info_map = group_info;
         //    let all_processes = &mut ret.crash_dump.processes;
@@ -252,8 +250,7 @@ impl Widget for &mut App {
             SelectedTab::Process => self.selected_tab.render_process(inner_area, buf, self),
             SelectedTab::ProcessGroup => self
                 .selected_tab
-                .render_process_group(inner_area, buf, self),
-            _ => unreachable!(),
+                .render_process_group(inner_area, buf, self)
         }
         render_footer(footer_area, buf);
     }
@@ -370,11 +367,6 @@ impl SelectedTab {
             .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
             .split(outer_layout[1]);
 
-        let group_table_state = app
-            .table_states
-            .get_mut(&SelectedTab::ProcessGroup)
-            .unwrap();
-
         let header_style = Style::default().fg(Color::White).bg(Color::Red);
         let selected_row_style = Style::default().fg(Color::White);
         let selected_col_style = Style::default().fg(Color::White);
@@ -422,8 +414,6 @@ impl SelectedTab {
         .block(Block::bordered().title(binding.as_str()))
         .highlight_style(Style::default().bg(Color::Blue));
 
-        let process_table_state = app.table_states.get_mut(&SelectedTab::Process).unwrap();
-
         let selected_item;
         {
             let process_table_state = app.table_states.get_mut(&SelectedTab::Process).unwrap();
@@ -448,7 +438,7 @@ impl SelectedTab {
             .alignment(Alignment::Left);
 
         let proc_heap = Paragraph::new(heap_info_text)
-            .block(Block::bordered().title("Process Heap"))
+            .block(Block::bordered().title("Decoded Process Heap"))
             .style(Style::default().fg(Color::White))
             .alignment(Alignment::Left);
 
