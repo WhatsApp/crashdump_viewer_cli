@@ -2,10 +2,21 @@
 View your crash dumps without wxwidgets.
 
 ## Examples
-...
+```
+cargo run sample_dumps/erl_crash_20250105-004018.dump
+```
+
+shows
+
+![general_view](./screenshots/general_view.png)
+
+![process_group](./screenshots/process_group.png)
+
+![process_view](./screenshots/process_view.png)
 
 
-## Building __________
+
+## Building Crash Dump Viewer CLI
 ```
 cargo build
 ```
