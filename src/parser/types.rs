@@ -28,7 +28,6 @@ pub const MAX_DEPTH_PARSE_DATATYPE: usize = 5;
 pub const MAX_BYTES_TO_PRINT_ON_A_BINARY: usize = 1024;
 pub const FIELD_BYTES: usize = 8;
 
-
 pub const TAG_PREAMBLE: &str = "erl_crash_dump";
 pub const TAG_ABORT: &str = "abort";
 pub const TAG_ALLOCATED_AREAS: &str = "allocated_areas";
@@ -395,7 +394,6 @@ pub struct CrashDump {
     pub raw_sections: HashMap<String, Vec<u8>>,
     pub group_info_map: HashMap<String, GroupInfo>,
 
-
     // derived data
     pub all_heap_addresses: HashMap<String, String>,
     pub all_visited_heap_addresses: HashSet<String>,
@@ -462,7 +460,6 @@ impl CrashDump {
         Ok(contents.to_string())
     }
 
-
     pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
         let mut crash_dump = CrashDump::new();
         let mut file = File::open(file_path)?;
@@ -501,22 +498,29 @@ impl CrashDump {
 
                                 let contents = Self::load_section(&index_row, &mut file)?;
 
-                                if let Ok(DumpSection::Generic(proc_heap)) = parse_section(&contents, Some(&id)) {
+                                if let Ok(DumpSection::Generic(proc_heap)) =
+                                    parse_section(&contents, Some(&id))
+                                {
                                     // proc heap is structured as <ADDR>:<VAL> such as `FFFF454383C8:lI47|HFFFF4543846`
                                     proc_heap.raw_lines.into_iter().for_each(|line| {
                                         let parts: Vec<&str> = line.splitn(2, ':').collect();
                                         if parts.len() == 2 {
-                                            crash_dump.all_heap_addresses.insert(parts[0].to_string(), parts[1].to_string());
+                                            crash_dump
+                                                .all_heap_addresses
+                                                .insert(parts[0].to_string(), parts[1].to_string());
                                         } else {
                                             // Handle the case where the line does not split into two parts
-                                            eprintln!("Line does not contain expected delimiter: {}", line);
+                                            eprintln!(
+                                                "Line does not contain expected delimiter: {}",
+                                                line
+                                            );
                                         }
                                     });
                                 }
                             }
 
                             Tag::Binary => {
-                                // binaries are structured like `=binary:FFFF4D7B8C88`, we only need to know the size                            
+                                // binaries are structured like `=binary:FFFF4D7B8C88`, we only need to know the size
                                 if let Some(binary_id) = &index_row.id {
                                     let len = index_row.length.parse::<usize>().unwrap_or(0);
                                     crash_dump.visited_binaries.insert(binary_id.clone(), len);
@@ -543,19 +547,24 @@ impl CrashDump {
                                 // persistent terms are structured like `HFFFF555F6DB0|I6`
                                 let contents = Self::load_section(&index_row, &mut file)?;
 
-                                if let Ok(DumpSection::Generic(persistent_terms)) = 
+                                if let Ok(DumpSection::Generic(persistent_terms)) =
                                     parse_section(&contents, None)
                                 {
                                     persistent_terms.raw_lines.into_iter().for_each(|line| {
                                         // Split the line on | and add the addr
                                         let parts: Vec<&str> = line.splitn(2, '|').collect();
                                         if parts.len() == 2 {
-                                            crash_dump.all_heap_addresses.insert(parts[0].to_string(), parts[1].to_string());
+                                            crash_dump
+                                                .all_heap_addresses
+                                                .insert(parts[0].to_string(), parts[1].to_string());
                                         } else {
                                             // Handle the case where the line does not split into two parts
-                                            eprintln!("Line does not contain expected delimiter: {}", line);
+                                            eprintln!(
+                                                "Line does not contain expected delimiter: {}",
+                                                line
+                                            );
                                         }
-                                    });                                    
+                                    });
                                 }
                             }
 
@@ -563,18 +572,23 @@ impl CrashDump {
                                 // Literals are structured like `FFFF55210230:t3:I6,I10,I14`
                                 let contents = Self::load_section(&index_row, &mut file)?;
 
-                                if let Ok(DumpSection::Generic(literals)) = 
+                                if let Ok(DumpSection::Generic(literals)) =
                                     parse_section(&contents, None)
                                 {
                                     literals.raw_lines.into_iter().for_each(|line| {
                                         let parts: Vec<&str> = line.splitn(2, ':').collect();
                                         if parts.len() == 2 {
-                                            crash_dump.all_heap_addresses.insert(parts[0].to_string(), parts[1].to_string());
+                                            crash_dump
+                                                .all_heap_addresses
+                                                .insert(parts[0].to_string(), parts[1].to_string());
                                         } else {
                                             // Handle the case where the line does not split into two parts
-                                            eprintln!("Line does not contain expected delimiter: {}", line);
+                                            eprintln!(
+                                                "Line does not contain expected delimiter: {}",
+                                                line
+                                            );
                                         }
-                                    });                                
+                                    });
                                 }
                             }
                             _ => {}
@@ -586,60 +600,380 @@ impl CrashDump {
         Ok(crash_dump)
     }
 
-
     // lines will look like `lA1E:jose_xchacha20_poly1305_crypto|HFFFF4541B8B0`
     // lines that have | denote a continuation of another heap addr
     // l is list, A is atom, H is heap, I is integer, Y is binary, E is heap binary
     // if we find a heap addr, increment the depth and continue parsing into the main structure
     // if it's a offheap binary, simply just print it out the length
-    // something with multiple 
+    // something with multiple
 
     pub fn load_proc_heap(&self, index_row: &IndexRow, file: &mut File) -> io::Result<String> {
         let contents = Self::load_section(index_row, file)?;
-        
-        let mut res = Vec::new(); // Make sure res is mutable
-        
-        if let Ok(DumpSection::Generic(proc_heap)) = parse_section(&contents, index_row.id.as_deref()) {
-            // proc heap is structured as <ADDR>:<VAL> such as `FFFF454383C8:lI47|HFFFF4543846`
+
+        let mut res = Vec::new();
+
+        if let Ok(DumpSection::Generic(proc_heap)) =
+            parse_section(&contents, index_row.id.as_deref())
+        {
             proc_heap.raw_lines.into_iter().for_each(|line| {
                 let parts: Vec<&str> = line.splitn(2, ':').collect();
                 if parts.len() == 2 {
                     let addr = parts[0];
-                    let parsed_res = self.parse_datatype(parts[1], 0).unwrap();
-                    res.push(format!("{:?} - {:?}", addr, parsed_res));
+                    match self.parse_datatype(parts[1], 0) {
+                        Ok(parsed_res) => res.push(format!("{} - {}", addr, parsed_res)),
+                        Err(err) => res.push(format!("{} - Error: {}", addr, err)), // Handle error
+                    }
                 } else {
-                    res.push(line.to_string()); // Convert line to String before pushing
+                    res.push(line.to_string());
                 }
             });
         }
         Ok(res.join("\n"))
     }
-    
 
     fn parse_datatype(&self, data: &str, depth: usize) -> Result<String, String> {
+        const MAX_DEPTH_PARSE_DATATYPE: usize = 10;
+
         if depth > MAX_DEPTH_PARSE_DATATYPE {
-            return Ok(format!("[warning_MAXDEPTH_reached_at, {}]", data));
+            return Ok(format!("(*{})", data));
         }
         let depth = depth + 1;
         match data.chars().next() {
-            // Some('t') => self.parse_tuple(data, depth),
+            Some('t') => self.parse_tuple(data, depth),
             Some('A') => Ok(self.parse_atom(data)),
-            // Some('l') => parse_list(filename, data, depth),
-            // Some('H') => parse_heap(data, depth),
             Some('I') => self.parse_int(data).map(|i| i.to_string()),
-            // Some('Y') => self.parse_binary(data),
             Some('N') => Ok("[]".to_string()),
-            // Some('E') => parse_heap_binary(data),
-            // Some('M') => self.parse_map(data, depth),
-            _ => Ok(format!("---dont know how to parse {} {}---", data, depth)),
+            Some('l') => self.parse_list(data, depth),
+            Some('H') => self.parse_heap(data, depth),
+            Some('E') => self.parse_encoded_term(data),
+            Some('B') => self.parse_bignum(data),
+            Some('F') => self.parse_float(data),
+            Some('P') | Some('p') => self.parse_pid(data),
+            Some('Y') => self.parse_binary(data),
+            Some('M') => self.parse_map(data, depth),
+            Some('R') => self.parse_funref(data),
+            _ => Ok(format!(
+                "---don't know how to parse {} at depth {}---",
+                data, depth
+            )),
         }
     }
 
     fn parse_atom(&self, data: &str) -> String {
         let parts: Vec<&str> = data.splitn(2, ':').collect();
-        parts[1].to_string()
+        if parts.len() > 1 {
+            parts[1].to_string()
+        } else {
+            "".to_string()
+        }
     }
 
+    fn parse_tuple(&self, data: &str, depth: usize) -> Result<String, String> {
+        let mut chars = data.chars();
+        chars.next(); // Consume 't'
+
+        let mut size_str = String::new();
+        while let Some(c) = chars.next() {
+            if c.is_digit(16) {
+                size_str.push(c);
+            } else {
+                if c == ':' {
+                    break;
+                } else {
+                    return Err(format!("Invalid tuple size format: {}", data));
+                }
+            }
+        }
+
+        let remaining_data = chars.as_str();
+        let parts: Vec<&str> = remaining_data.split(',').collect();
+
+        let parsed: Result<Vec<String>, String> = parts
+            .iter()
+            .map(|x| self.parse_datatype(x, depth))
+            .collect();
+
+        let parsed = parsed?;
+        Ok(format!("{{{}}}", parsed.join(", ")))
+    }
+
+    fn parse_int(&self, data: &str) -> Result<i64, String> {
+        let int_str = &data[1..];
+        int_str.parse::<i64>().map_err(|e| e.to_string())
+    }
+
+    fn parse_list(&self, data: &str, depth: usize) -> Result<String, String> {
+        let mut parts = data[1..].split('|'); // Remove 'l' and split by '|'
+        let parsed: Result<Vec<String>, String> =
+            parts.map(|x| self.parse_datatype(x, depth)).collect();
+
+        let parsed = parsed?;
+        Ok(format!("[{}]", parsed.join(", ")))
+    }
+
+    fn parse_heap(&self, data: &str, depth: usize) -> Result<String, String> {
+        self.parse_datatype(&data, depth) // Remove 'H' and parse recursively
+    }
+
+    fn parse_bignum(&self, data: &str) -> Result<String, String> {
+        let sign = if data.starts_with("B-") { "-" } else { "" };
+        let number_str = if data.starts_with("B16#") || data.starts_with("B-16#") {
+            &data[4..] // Skip "B16#" or "B-16#"
+        } else {
+            &data[1..] // Skip "B"
+        };
+        Ok(format!("[bignum size: {}]", number_str.len()))
+    }
+
+    fn parse_float(&self, data: &str) -> Result<String, String> {
+        let parts: Vec<&str> = data[1..].splitn(2, ':').collect(); // Skip 'F'
+        if parts.len() != 2 {
+            return Err(format!("Invalid float format: {}", data));
+        }
+        let len_str = parts[0];
+        let float_str = parts[1];
+        let len: usize = usize::from_str_radix(len_str, 16).map_err(|e| e.to_string())?;
+        if len != float_str.len() {
+            return Err(format!(
+                "Float length mismatch: expected {}, got {}",
+                len,
+                float_str.len()
+            ));
+        }
+        Ok(format!("[float: {}]", float_str))
+    }
+
+    fn parse_pid(&self, data: &str) -> Result<String, String> {
+        let prefix = match data.chars().next() {
+            Some('P') => "[external pid: ",
+            Some('p') => "[external port: ",
+            _ => return Err(format!("Invalid pid/port format: {}", data)),
+        };
+        Ok(format!("{}{}]", prefix, &data[1..]))
+    }
+
+    fn parse_binary(&self, data: &str) -> Result<String, String> {
+        match &data[1..2] {
+            "h" => {
+                // Heap binary
+                let binary_data = &data[3..]; // Skip "Yh"
+                Ok(format!("[heap binary: {}]", binary_data))
+            }
+            "c" => {
+                // Reference-counted binary
+                let parts: Vec<&str> = data[2..].split(':').collect(); // Skip "Yc"
+                if parts.len() != 3 {
+                    return Err(format!("Invalid reference-counted binary format: {}", data));
+                }
+                let binp0_str = parts[0];
+                let offset_str = parts[1];
+                let sz_str = parts[2];
+
+                // Parse the values as hexadecimal integers
+                let binp0: usize =
+                    usize::from_str_radix(binp0_str, 16).map_err(|e| e.to_string())?;
+                let offset: usize =
+                    usize::from_str_radix(offset_str, 16).map_err(|e| e.to_string())?;
+                let sz: usize = usize::from_str_radix(sz_str, 16).map_err(|e| e.to_string())?;
+
+                // Lookup in binary index (using self.visited_binaries)
+                let binp_str = format!("{:X}", binp0); // Convert binp0 to hex string
+                match self.visited_binaries.get(&binp_str) {
+                    Some(len) => {
+                        // Found in visited binaries
+                        Ok(format!(
+                            "[ref-counted binary: binp0=0x{:x}, offset={}, sz={}, len={}]",
+                            binp0, offset, sz, len
+                        ))
+                    }
+                    None => {
+                        // Not found in visited binaries
+                        Ok(format!(
+                            "[ref-counted binary: binp0=0x{:x}, offset={}, sz={}, not found]",
+                            binp0, offset, sz
+                        ))
+                    }
+                }
+            }
+            "s" => {
+                // Sub binary
+                let parts: Vec<&str> = data[2..].split(':').collect(); // Skip "Ys"
+                if parts.len() != 3 {
+                    return Err(format!("Invalid sub binary format: {}", data));
+                }
+                let binp0_str = parts[0];
+                let offset_str = parts[1];
+                let sz_str = parts[2];
+
+                // Parse the values as hexadecimal integers
+                let binp0: usize =
+                    usize::from_str_radix(binp0_str, 16).map_err(|e| e.to_string())?;
+                let offset: usize =
+                    usize::from_str_radix(offset_str, 16).map_err(|e| e.to_string())?;
+                let sz: usize = usize::from_str_radix(sz_str, 16).map_err(|e| e.to_string())?;
+
+                // Dereference the binary (using self.visited_binaries)
+                let binp_str = format!("{:X}", binp0); // Convert binp0 to hex string
+                match self.visited_binaries.get(&binp_str) {
+                    Some(len) => {
+                        // Found in visited binaries
+                        let start = offset; // Assuming offset is the start position
+                        let end = offset + sz; // Assuming sz is the size of the sub binary
+                        if end > *len {
+                            return Err(format!(
+                                "Sub binary out of bounds: start={}, end={}, len={}",
+                                start, end, len
+                            ));
+                        }
+                        Ok(format!(
+                            "[sub binary: binp0=0x{:x}, offset={}, sz={}, start={}, end={}]",
+                            binp0, offset, sz, start, end
+                        ))
+                    }
+                    None => {
+                        // Not found in visited binaries
+                        Ok(format!(
+                            "[sub binary: binp0=0x{:x}, offset={}, sz={}, not found]",
+                            binp0, offset, sz
+                        ))
+                    }
+                }
+            }
+            _ => Err(format!("Invalid binary type: {}", data)),
+        }
+    }
+    fn parse_map(&self, data: &str, depth: usize) -> Result<String, String> {
+        match &data[1..2] {
+            "f" => {
+                // Flatmap
+                let parts: Vec<&str> = data[2..].split(':').collect(); // Skip "Mf"
+                if parts.len() < 2 {
+                    // At least size and one key-value pair
+                    return Err(format!("Invalid flatmap format: {}", data));
+                }
+                let size_str = parts[0];
+                let size: usize = usize::from_str_radix(size_str, 16)
+                    .map_err(|e| format!("{:?}, {}", parts, e.to_string()))?;
+
+                // Recursively parse the key-value pairs
+                let mut key_value_pairs = Vec::new();
+                let mut current_data = parts[1..].join(":"); // Join the remaining parts with ":"
+                for _ in 0..size {
+                    let parts: Vec<&str> = current_data.splitn(2, ':').collect();
+                    if parts.len() != 2 {
+                        return Err(format!(
+                            "Invalid flatmap key-value pair format: {}",
+                            current_data
+                        ));
+                    }
+                    let key_data = parts[0];
+                    let value_data = parts[1];
+                    let key = self.parse_datatype(key_data, depth + 1)?;
+                    let value = self.parse_datatype(value_data, depth + 1)?;
+                    key_value_pairs.push(format!("{}: {}", key, value));
+                    current_data = value_data.to_string();
+                }
+
+                Ok(format!(
+                    "[flatmap: size={}, {{{}}}]",
+                    size,
+                    key_value_pairs.join(", ")
+                ))
+            }
+            "h" => {
+                // Hashmap head node
+                let parts: Vec<&str> = data[3..].split(':').collect(); // Skip "Mh"
+                if parts.len() != 2 {
+                    return Err(format!("Invalid hashmap head node format: {}", data));
+                }
+                let map_size_str = parts[0];
+                let n_str = parts[1];
+                let map_size: usize =
+                    usize::from_str_radix(map_size_str, 16).map_err(|e| e.to_string())?;
+                let n: usize = usize::from_str_radix(n_str, 16).map_err(|e| e.to_string())?;
+
+                // Recursively parse the nodes
+                let mut nodes = Vec::new();
+                let mut current_data = n_str.to_owned();
+                for _ in 0..n {
+                    let parts: Vec<&str> = current_data.splitn(2, '|').collect();
+                    if parts.len() != 2 {
+                        return Err(format!("Invalid hashmap node format: {}", current_data));
+                    }
+                    let node_data = parts[0];
+                    let next_data = parts[1];
+                    let node = self.parse_datatype(node_data, depth + 1)?;
+                    nodes.push(node);
+                    current_data = next_data.to_string();
+                }
+
+                Ok(format!(
+                    "[hashmap head: size={}, nodes=[{}]]",
+                    map_size,
+                    nodes.join(", ")
+                ))
+            }
+            "n" => {
+                // Hashmap interior node
+                let parts: Vec<&str> = data[3..].split(':').collect(); // Skip "Mn"
+                if parts.len() != 1 {
+                    return Err(format!("Invalid hashmap interior node format: {}", data));
+                }
+                let n_str = parts[0];
+                let n: usize = usize::from_str_radix(n_str, 16).map_err(|e| e.to_string())?;
+
+                // Recursively parse the nodes
+                let mut nodes = Vec::new();
+                let mut current_data = n_str.to_owned();
+                for _ in 0..n {
+                    let parts: Vec<&str> = current_data.splitn(2, '|').collect();
+                    if parts.len() != 2 {
+                        return Err(format!("Invalid hashmap node format: {}", current_data));
+                    }
+                    let node_data = parts[0];
+                    let next_data = parts[1];
+                    let node = self.parse_datatype(node_data, depth + 1)?;
+                    nodes.push(node);
+                    current_data = next_data.to_string();
+                }
+
+                Ok(format!("[hashmap interior: nodes=[{}]]", nodes.join(", ")))
+            }
+            _ => Err(format!("Invalid map type: {}", data)),
+        }
+    }
+
+    fn parse_funref(&self, data: &str) -> Result<String, String> {
+        let ref_id = &data[2..]; // Skip "Rf"
+        Ok(format!("[fun ref: {}]", ref_id))
+    }
+
+    fn parse_encoded_term(&self, data: &str) -> Result<String, String> {
+        // Remove the 'E' prefix
+        let data = &data[1..];
+
+        // Split the data by ':'
+        let parts: Vec<&str> = data.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            return Err(format!("Invalid heap binary format: {}", data));
+        }
+
+        // Extract the length and binary data
+        let len_str = parts[0];
+        let binary_data = parts[1];
+
+        // Parse the length as an integer
+        let len: usize = usize::from_str_radix(len_str, 16).map_err(|e| e.to_string())?;
+
+        // let decoded_data = match base64::decode(binary_data) {
+        //     Ok(data) => data,
+        //     Err(e) => return Err(format!("Base64 decode error: {}", e)),
+        // };
+
+        // let decoded_str = String::from_utf8_lossy(&decoded_data);
+
+        Ok(format!("<<bin size {}>>", len))
+    }
 
     // fn parse_list(data: &str, depth: usize) -> Result<String, String> {
     //     let mut acc = Vec::new();
@@ -681,22 +1015,6 @@ impl CrashDump {
     //     };
     //     Ok(result)
     // }
-
-    fn parse_tuple(&self, data: &str, depth: usize) -> Result<String, String> {
-        let parts: Vec<&str> = data.splitn(2, ':').collect();
-        let rem = parts[1];
-        let parts: Vec<&str> = rem.split(',').collect();
-        let parsed: Result<Vec<String>, String> = parts.iter()
-            .map(|x| self.parse_datatype(x, depth))
-            .collect();
-        let parsed = parsed?;
-        Ok(format!("{{{}}}", parsed.join(", ")))
-    }
-    fn parse_int(&self, data: &str) -> Result<i32, String> {
-        data[1..].parse::<i32>().map_err(|e| e.to_string())
-    }
-
-
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]

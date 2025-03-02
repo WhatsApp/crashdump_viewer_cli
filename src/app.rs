@@ -111,11 +111,9 @@ impl App {
 
         let crash_dump = parser.parse().unwrap();
         ret.crash_dump = crash_dump;
-    
-        println!("heap addrs: {:?}", ret.crash_dump.all_heap_addresses);
-        println!("binaries: {:?}", ret.crash_dump.visited_binaries);
 
-    
+        //println!("heap addrs: {:?}", ret.crash_dump.all_heap_addresses);
+        //println!("binaries: {:?}", ret.crash_dump.visited_binaries);
 
         ret.ancestor_map = parser::CDParser::create_descendants_table(&ret.crash_dump.processes);
         // for every ancestor:<children> mapping, we need to calculate the GroupInfo for each one if the pid exists

@@ -16,5 +16,3 @@ pub mod parser;
 pub use self::parser::*;
 pub mod types;
 pub use self::types::*;
-pub mod decoder;
-pub use self::decoder::*;

@@ -86,7 +86,6 @@ impl CDParser {
 
         // TODO: add mmap support
 
-        println!("Constructed new parser by default");
         Ok(CDParser {
             //file,
             // mmap,
