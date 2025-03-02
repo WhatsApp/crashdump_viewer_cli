@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::parser::CrashDump;
 use crate::parser::*;
 use color_eyre::Result;
 use ratatui::{
@@ -112,6 +111,11 @@ impl App {
 
         let crash_dump = parser.parse().unwrap();
         ret.crash_dump = crash_dump;
+    
+        println!("heap addrs: {:?}", ret.crash_dump.all_heap_addresses);
+        println!("binaries: {:?}", ret.crash_dump.visited_binaries);
+
+    
 
         ret.ancestor_map = parser::CDParser::create_descendants_table(&ret.crash_dump.processes);
         // for every ancestor:<children> mapping, we need to calculate the GroupInfo for each one if the pid exists
@@ -486,7 +490,7 @@ impl SelectedTab {
         let rows = app.tab_lists[&SelectedTab::ProcessGroup]
             .iter()
             .enumerate()
-            .map(|(i, group)| {
+            .map(|(_i, group)| {
                 let group_info = app.crash_dump.group_info_map.get(group).unwrap();
                 let item = group_info.ref_array();
                 Row::new(item)
@@ -539,14 +543,6 @@ impl SelectedTab {
         Widget::render(&children_block, inner_layout[0], buf);
         Widget::render(&detail_block, inner_layout[1], buf);
         StatefulWidget::render(&table, outer_layout[0], buf, group_table_state);
-    }
-
-    /// A block surrounding the tab's content
-    fn block(self) -> Block<'static> {
-        Block::bordered()
-            .border_set(symbols::border::PROPORTIONAL_TALL)
-            .padding(Padding::horizontal(1))
-            .border_style(self.palette().c700)
     }
 
     const fn palette(self) -> tailwind::Palette {

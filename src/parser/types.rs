@@ -16,15 +16,18 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::borrow::BorrowMut;
 use std::borrow::Cow;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::fmt;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::str::FromStr;
 use std::time::SystemTime;
+
+pub const MAX_DEPTH_PARSE_DATATYPE: usize = 5;
+pub const MAX_BYTES_TO_PRINT_ON_A_BINARY: usize = 1024;
+pub const FIELD_BYTES: usize = 8;
+
 
 pub const TAG_PREAMBLE: &str = "erl_crash_dump";
 pub const TAG_ABORT: &str = "abort";
@@ -372,8 +375,9 @@ pub enum InfoOrIndex<T> {
     Info(T),
 }
 
-// #[derive(Debug)]
+#[derive(Debug)]
 pub struct CrashDump {
+    // physical crash dump sections
     pub preamble: Preamble,
     pub memory: MemoryInfo,
     pub allocators: Vec<InfoOrIndex<AllocatorInfo>>,
@@ -390,6 +394,15 @@ pub struct CrashDump {
     pub persistent_terms: Vec<InfoOrIndex<PersistentTermInfo>>,
     pub raw_sections: HashMap<String, Vec<u8>>,
     pub group_info_map: HashMap<String, GroupInfo>,
+
+
+    // derived data
+    pub all_heap_addresses: HashMap<String, String>,
+    pub all_visited_heap_addresses: HashSet<String>,
+    pub visited_binaries: HashMap<String, usize>,
+    pub visited_binaries_found: HashMap<String, usize>,
+    pub visited_binaries_not_found: HashMap<String, String>,
+    pub all_off_heap_binaries: HashMap<String, (usize, usize)>,
 }
 
 impl CrashDump {
@@ -427,6 +440,12 @@ impl CrashDump {
             persistent_terms: vec![],
             raw_sections: HashMap::new(),
             group_info_map: HashMap::new(),
+            all_heap_addresses: HashMap::new(),
+            all_visited_heap_addresses: HashSet::new(),
+            visited_binaries: HashMap::new(),
+            visited_binaries_found: HashMap::new(),
+            visited_binaries_not_found: HashMap::new(),
+            all_off_heap_binaries: HashMap::new(),
         }
     }
 
@@ -442,6 +461,7 @@ impl CrashDump {
         let contents = String::from_utf8_lossy(&buffer);
         Ok(contents.to_string())
     }
+
 
     pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
         let mut crash_dump = CrashDump::new();
@@ -474,9 +494,33 @@ impl CrashDump {
                             }
 
                             Tag::ProcHeap => {
+                                // add only the idx's since we don't need to load them yet
                                 crash_dump
                                     .processes_heap
                                     .insert(id.clone(), InfoOrIndex::Index(index_row.clone()));
+
+                                let contents = Self::load_section(&index_row, &mut file)?;
+
+                                if let Ok(DumpSection::Generic(proc_heap)) = parse_section(&contents, Some(&id)) {
+                                    // proc heap is structured as <ADDR>:<VAL> such as `FFFF454383C8:lI47|HFFFF4543846`
+                                    proc_heap.raw_lines.into_iter().for_each(|line| {
+                                        let parts: Vec<&str> = line.splitn(2, ':').collect();
+                                        if parts.len() == 2 {
+                                            crash_dump.all_heap_addresses.insert(parts[0].to_string(), parts[1].to_string());
+                                        } else {
+                                            // Handle the case where the line does not split into two parts
+                                            eprintln!("Line does not contain expected delimiter: {}", line);
+                                        }
+                                    });
+                                }
+                            }
+
+                            Tag::Binary => {
+                                // binaries are structured like `=binary:FFFF4D7B8C88`, we only need to know the size                            
+                                if let Some(binary_id) = &index_row.id {
+                                    let len = index_row.length.parse::<usize>().unwrap_or(0);
+                                    crash_dump.visited_binaries.insert(binary_id.clone(), len);
+                                }
                             }
 
                             _ => {}
@@ -495,6 +539,44 @@ impl CrashDump {
                                     crash_dump.memory = memory;
                                 }
                             }
+                            Tag::PersistentTerms => {
+                                // persistent terms are structured like `HFFFF555F6DB0|I6`
+                                let contents = Self::load_section(&index_row, &mut file)?;
+
+                                if let Ok(DumpSection::Generic(persistent_terms)) = 
+                                    parse_section(&contents, None)
+                                {
+                                    persistent_terms.raw_lines.into_iter().for_each(|line| {
+                                        // Split the line on | and add the addr
+                                        let parts: Vec<&str> = line.splitn(2, '|').collect();
+                                        if parts.len() == 2 {
+                                            crash_dump.all_heap_addresses.insert(parts[0].to_string(), parts[1].to_string());
+                                        } else {
+                                            // Handle the case where the line does not split into two parts
+                                            eprintln!("Line does not contain expected delimiter: {}", line);
+                                        }
+                                    });                                    
+                                }
+                            }
+
+                            Tag::Literals => {
+                                // Literals are structured like `FFFF55210230:t3:I6,I10,I14`
+                                let contents = Self::load_section(&index_row, &mut file)?;
+
+                                if let Ok(DumpSection::Generic(literals)) = 
+                                    parse_section(&contents, None)
+                                {
+                                    literals.raw_lines.into_iter().for_each(|line| {
+                                        let parts: Vec<&str> = line.splitn(2, ':').collect();
+                                        if parts.len() == 2 {
+                                            crash_dump.all_heap_addresses.insert(parts[0].to_string(), parts[1].to_string());
+                                        } else {
+                                            // Handle the case where the line does not split into two parts
+                                            eprintln!("Line does not contain expected delimiter: {}", line);
+                                        }
+                                    });                                
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -503,6 +585,118 @@ impl CrashDump {
         }
         Ok(crash_dump)
     }
+
+
+    // lines will look like `lA1E:jose_xchacha20_poly1305_crypto|HFFFF4541B8B0`
+    // lines that have | denote a continuation of another heap addr
+    // l is list, A is atom, H is heap, I is integer, Y is binary, E is heap binary
+    // if we find a heap addr, increment the depth and continue parsing into the main structure
+    // if it's a offheap binary, simply just print it out the length
+    // something with multiple 
+
+    pub fn load_proc_heap(&self, index_row: &IndexRow, file: &mut File) -> io::Result<String> {
+        let contents = Self::load_section(index_row, file)?;
+        
+        let mut res = Vec::new(); // Make sure res is mutable
+        
+        if let Ok(DumpSection::Generic(proc_heap)) = parse_section(&contents, index_row.id.as_deref()) {
+            // proc heap is structured as <ADDR>:<VAL> such as `FFFF454383C8:lI47|HFFFF4543846`
+            proc_heap.raw_lines.into_iter().for_each(|line| {
+                let parts: Vec<&str> = line.splitn(2, ':').collect();
+                if parts.len() == 2 {
+                    let addr = parts[0];
+                    let parsed_res = self.parse_datatype(parts[1], 0).unwrap();
+                    res.push(format!("{:?} - {:?}", addr, parsed_res));
+                } else {
+                    res.push(line.to_string()); // Convert line to String before pushing
+                }
+            });
+        }
+        Ok(res.join("\n"))
+    }
+    
+
+    fn parse_datatype(&self, data: &str, depth: usize) -> Result<String, String> {
+        if depth > MAX_DEPTH_PARSE_DATATYPE {
+            return Ok(format!("[warning_MAXDEPTH_reached_at, {}]", data));
+        }
+        let depth = depth + 1;
+        match data.chars().next() {
+            // Some('t') => self.parse_tuple(data, depth),
+            Some('A') => Ok(self.parse_atom(data)),
+            // Some('l') => parse_list(filename, data, depth),
+            // Some('H') => parse_heap(data, depth),
+            Some('I') => self.parse_int(data).map(|i| i.to_string()),
+            // Some('Y') => self.parse_binary(data),
+            Some('N') => Ok("[]".to_string()),
+            // Some('E') => parse_heap_binary(data),
+            // Some('M') => self.parse_map(data, depth),
+            _ => Ok(format!("---dont know how to parse {} {}---", data, depth)),
+        }
+    }
+
+    fn parse_atom(&self, data: &str) -> String {
+        let parts: Vec<&str> = data.splitn(2, ':').collect();
+        parts[1].to_string()
+    }
+
+
+    // fn parse_list(data: &str, depth: usize) -> Result<String, String> {
+    //     let mut acc = Vec::new();
+    //     let mut truncated = false;
+    //     let mut data = data.to_string();
+    //     loop {
+    //         let rem = &data[1..];
+    //         let parts: Vec<&str> = rem.split('|').collect();
+    //         let part1 = parts[0];
+    //         let p1 = parse_datatype(filename, part1, depth)?;
+    //         acc.push(p1);
+    //         if parts.len() == 2 {
+    //             let part2 = parts[1];
+    //             if part2 == "N" {
+    //                 break;
+    //             }
+    //             let address = &part2[1..];
+    //             if all_heap_addresses.contains_key(address) {
+    //                 visited_heap_addresses.insert(address.to_string());
+    //                 data = all_heap_addresses[address].clone();
+    //             } else {
+    //                 truncated = true;
+    //                 break;
+    //             }
+    //         } else {
+    //             break;
+    //         }
+    //     }
+    //     let result = try_string(&acc);
+    //     let result = match result {
+    //         Ok(s) => s,
+    //         Err(list) => {
+    //             let mut result = list.join(", ");
+    //             if truncated {
+    //                 result.push_str("...< heap truncated >");
+    //             }
+    //             format!("[{}]", result)
+    //         }
+    //     };
+    //     Ok(result)
+    // }
+
+    fn parse_tuple(&self, data: &str, depth: usize) -> Result<String, String> {
+        let parts: Vec<&str> = data.splitn(2, ':').collect();
+        let rem = parts[1];
+        let parts: Vec<&str> = rem.split(',').collect();
+        let parsed: Result<Vec<String>, String> = parts.iter()
+            .map(|x| self.parse_datatype(x, depth))
+            .collect();
+        let parsed = parsed?;
+        Ok(format!("{{{}}}", parsed.join(", ")))
+    }
+    fn parse_int(&self, data: &str) -> Result<i32, String> {
+        data[1..].parse::<i32>().map_err(|e| e.to_string())
+    }
+
+
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
@@ -571,58 +765,6 @@ pub struct Processes {
 pub struct Atom {
     pub total: i64,
     pub used: i64,
-}
-// #[derive(Debug, Deserialize)]
-pub struct AllocatorInfo {
-    pub name: String,
-    pub version: String,
-    pub options: HashMap<String, String>,
-    pub mbcs_blocks: HashMap<String, BlockInfo>,
-    pub mbcs_carriers: MBCSCarriers,
-    pub sbcs_blocks: HashMap<String, BlockInfo>,
-    pub sbcs_carriers: SBCSCarriers,
-    pub calls: Calls,
-}
-// #[derive(Debug, Deserialize)]
-pub struct MBCSCarriers {
-    pub count: i64,
-    pub mseg_count: i64,
-    pub sys_alloc_count: i64,
-    pub size: [i64; 3],
-    pub mseg_size: i64,
-    pub sys_alloc_size: i64,
-}
-// #[derive(Debug, Deserialize)]
-pub struct SBCSCarriers {
-    pub count: i64,
-    pub mseg_count: i64,
-    pub sys_alloc_count: i64,
-    pub size: [i64; 3],
-    pub mseg_size: i64,
-    pub sys_alloc_size: i64,
-}
-// #[derive(Debug, Deserialize)]
-pub struct Calls {
-    pub alloc: i64,
-    pub free: i64,
-    pub realloc: i64,
-    pub mseg_alloc: i64,
-    pub mseg_dealloc: i64,
-    pub mseg_realloc: i64,
-    pub sys_alloc: i64,
-    pub sys_free: i64,
-    pub sys_realloc: i64,
-}
-// #[derive(Debug, Deserialize)]
-pub struct BlockInfo {
-    pub count: [i64; 3],
-    pub size: [i64; 3],
-}
-// #[derive(Debug, Deserialize)]
-pub struct NodeInfo {
-    pub name: String,
-    pub type_: String,
-    pub status: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
@@ -773,13 +915,68 @@ pub enum ValueType {
     HeapRefValue,
     PidValue,
 }
-// #[derive(Debug, Deserialize)]
+
+// the following structs are not strictly parsed yet, although support for them is ongoing
+#[derive(Debug)]
+pub struct AllocatorInfo {
+    pub name: String,
+    pub version: String,
+    pub options: HashMap<String, String>,
+    pub mbcs_blocks: HashMap<String, BlockInfo>,
+    pub mbcs_carriers: MBCSCarriers,
+    pub sbcs_blocks: HashMap<String, BlockInfo>,
+    pub sbcs_carriers: SBCSCarriers,
+    pub calls: Calls,
+}
+#[derive(Debug)]
+pub struct MBCSCarriers {
+    pub count: i64,
+    pub mseg_count: i64,
+    pub sys_alloc_count: i64,
+    pub size: [i64; 3],
+    pub mseg_size: i64,
+    pub sys_alloc_size: i64,
+}
+#[derive(Debug)]
+pub struct SBCSCarriers {
+    pub count: i64,
+    pub mseg_count: i64,
+    pub sys_alloc_count: i64,
+    pub size: [i64; 3],
+    pub mseg_size: i64,
+    pub sys_alloc_size: i64,
+}
+#[derive(Debug)]
+pub struct Calls {
+    pub alloc: i64,
+    pub free: i64,
+    pub realloc: i64,
+    pub mseg_alloc: i64,
+    pub mseg_dealloc: i64,
+    pub mseg_realloc: i64,
+    pub sys_alloc: i64,
+    pub sys_free: i64,
+    pub sys_realloc: i64,
+}
+#[derive(Debug)]
+pub struct BlockInfo {
+    pub count: [i64; 3],
+    pub size: [i64; 3],
+}
+#[derive(Debug)]
+pub struct NodeInfo {
+    pub name: String,
+    pub type_: String,
+    pub status: String,
+}
+
+#[derive(Debug)]
 pub struct ProcStackInfo {
     pub pid: String,
     pub variables: HashMap<String, Value>,
     pub frames: Vec<StackFrame>,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct StackFrame {
     pub address: String,
     pub return_addr: String,
@@ -787,7 +984,7 @@ pub struct StackFrame {
     pub offset: i64,
     pub variables: HashMap<String, Value>,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct SchedulerInfo {
     pub id: i32,
     pub sleep_info: SleepInfo,
@@ -795,12 +992,12 @@ pub struct SchedulerInfo {
     pub run_queue: RunQueue,
     pub current_process: CurrentProcess,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct SleepInfo {
     pub flags: Vec<String>,
     pub aux_work: Vec<String>,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct RunQueue {
     pub max_length: i32,
     pub high_length: i32,
@@ -809,7 +1006,7 @@ pub struct RunQueue {
     pub port_length: i32,
     pub flags: Vec<String>,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct CurrentProcess {
     pub pid: String,
     pub state: String,
@@ -817,7 +1014,7 @@ pub struct CurrentProcess {
     pub program_counter: ProgramCounter,
     pub stack_trace: Vec<StackFrame>,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct EtsInfo {
     pub pid: String,
     pub slot: i64,
@@ -834,7 +1031,7 @@ pub struct EtsInfo {
     pub write_concurrency: bool,
     pub read_concurrency: bool,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct ChainLength {
     pub avg: f64,
     pub max: i32,
@@ -842,48 +1039,33 @@ pub struct ChainLength {
     pub std_dev: f64,
     pub expected_std_dev: f64,
 }
-// #[derive(Debug, Deserialize)]
-pub struct IndexTableInfo {
-    pub name: String,
-    pub size: i64,
-    pub limit: i64,
-    pub entries: i64,
-}
-// #[derive(Debug, Deserialize)]
-pub struct HashTableInfo {
-    pub name: String,
-    pub size: i64,
-    pub used: i64,
-    pub objects: i64,
-    pub depth: i32,
-}
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct TimerInfo {
     pub pid: String,
     pub message: serde_json::Value,
     pub time_left: i64,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct LoadedModules {
     pub current_code: i64,
     pub old_code: i64,
     pub modules: Vec<ModuleInfo>,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct ModuleInfo {
     pub name: String,
     pub current_size: i64,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct PersistentTermInfo {
     pub terms: Vec<PersistentTerm>,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct PersistentTerm {
     pub address: String,
     pub value: Value,
 }
-// #[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct PortInfo {
     pub id: String,
     pub state: Vec<String>,

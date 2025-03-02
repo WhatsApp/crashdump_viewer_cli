@@ -76,7 +76,7 @@ async fn main() -> AppResult<()> {
         // Exit the user interface.
         tui.exit()?;
     } else if args.action == "json" {
-        println!("JSON representation of the app state");
+        todo!()
     } else {
         println!("Invalid action: {}", args.action);
     }

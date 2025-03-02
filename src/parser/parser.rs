@@ -83,10 +83,10 @@ impl CDParser {
     pub fn new(filepath: &str) -> Result<Self, io::Error> {
         let (filepath, filename) = Self::split_path_and_filename(filepath)?;
         let realpath = filepath.join(&filename);
-        // need to figure out mmap later
-        // let mmap = unsafe { Mmap::map(&file)? };
 
-        println!("Constructed new parser by default"))
+        // TODO: add mmap support
+
+        println!("Constructed new parser by default");
         Ok(CDParser {
             //file,
             // mmap,
@@ -217,7 +217,7 @@ impl CDParser {
         if let Some(InfoOrIndex::Index(heap_index)) = crash_dump.processes_heap.get(id) {
             let mut file = File::open(filepath.clone())?;
 
-            return CrashDump::load_section(heap_index, &mut file);
+            return crash_dump.load_proc_heap(heap_index, &mut file);
         }
         Ok("".to_string())
     }
@@ -259,48 +259,6 @@ impl CDParser {
         }
         group_info_map
     }
-
-    // // takes in a process map and finds the largest N process groups, based on the GroupInfo struct
-    // pub fn get_top_n_process_groups(
-    //     processes: &HashMap<String, InfoOrIndex<ProcInfo>>,
-    //     top_n: usize,
-    // ) -> (Vec<String>, Vec<String>) {
-    //     let mut heap_size_groups: Vec<(String, i64)> = processes
-    //         .iter()
-    //         .filter_map(|(pid, info_or_index)| {
-    //             if let InfoOrIndex::Info(proc_info) = info_or_index {
-    //                 Some((pid.clone(), proc_info.group_info.total_heap_size))
-    //             } else {
-    //                 None
-    //             }
-    //         })
-    //         .collect();
-    //     let mut binary_size_groups: Vec<(String, i64)> = processes
-    //         .iter()
-    //         .filter_map(|(pid, info_or_index)| {
-    //             if let InfoOrIndex::Info(proc_info) = info_or_index {
-    //                 Some((pid.clone(), proc_info.group_info.total_binary_size))
-    //             } else {
-    //                 None
-    //             }
-    //         })
-    //         .collect();
-    //     heap_size_groups.sort_by(|a, b| b.1.cmp(&a.1));
-    //     binary_size_groups.sort_by(|a, b| b.1.cmp(&a.1));
-
-    //     let top_heap_size_pids = heap_size_groups
-    //         .into_iter()
-    //         .take(top_n)
-    //         .map(|(pid, _)| pid)
-    //         .collect();
-    //     let top_binary_size_pids = binary_size_groups
-    //         .into_iter()
-    //         .take(top_n)
-    //         .map(|(pid, _)| pid)
-    //         .collect();
-
-    //     (top_heap_size_pids, top_binary_size_pids)
-    // }
 
     pub fn create_descendants_table(
         all_processes_info: &HashMap<String, InfoOrIndex<ProcInfo>>,
