@@ -3,7 +3,8 @@
 on:
   release:
     types: [created]
-
+env:
+  TOOLCHAIN_VERSION: stable
 jobs:
   release:
     name: release ${{ matrix.target }}
