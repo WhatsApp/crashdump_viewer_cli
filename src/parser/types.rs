@@ -597,36 +597,6 @@ impl CrashDump {
         Ok(res.join("\n"))
     }
 
-    // pub fn load_proc_stack(&self, index_row: &IndexRow, file: &mut File) -> io::Result<Vec<Spans>> {
-    //     let contents = Self::load_section(index_row, file)?;
-    //     //println!("contents: {}", contents);
-    //     let mut res = Vec::new();
-
-    //     if let Ok(DumpSection::ProcStack(proc_stack)) =
-    //         parse_section(&contents, index_row.id.as_deref())
-    //     {
-    //         proc_stack.frames.into_iter().for_each(|frame| {
-    //             // decode the variables on the stack
-    //             let mut current_line_variables = Vec::new();
-
-    //             // println!("frame: {:?}", frame);
-    //             frame.variables.into_iter().for_each(|variable| {
-    //                 current_line_variables.push(self.parse_datatype(&variable, 0).unwrap());
-    //             });
-
-    //             res.push(format!(
-    //                 "{} - M: {} F: {} A: ({})",
-    //                 frame.address,
-    //                 frame.module,
-    //                 frame.function,
-    //                 current_line_variables.join(",")
-    //             ));
-    //             // res.push(format!("{} - {}", frame.address, frame.function));
-    //         });
-    //     }
-    //     Ok(res.join("\n"))
-    // }
-
     pub fn load_proc_stack(&self, index_row: &IndexRow, file: &mut File) -> io::Result<Text> {
         let contents = Self::load_section(index_row, file)?;
         let mut text = Text::default();
@@ -689,7 +659,8 @@ impl CrashDump {
             Some('F') => self.parse_float(data),
             Some('P') | Some('p') => self.parse_pid(data),
             Some('Y') => self.parse_binary(data),
-            Some('M') => self.parse_map(data, depth),
+            Some('M') => Ok(format!("M: {}", data)),
+            // Some('M') => self.parse_map(data, depth), // TODO: FIX MAP PARSING, IT'S BROKEN
             Some('R') => self.parse_funref(data),
             Some('S') => Ok(self.parse_string(data)),
             _ => Ok(format!(
@@ -724,6 +695,7 @@ impl CrashDump {
 
         let mut size_str = String::new();
         while let Some(c) = chars.next() {
+            // hex for the sizes
             if c.is_digit(16) {
                 size_str.push(c);
             } else {
@@ -762,7 +734,13 @@ impl CrashDump {
     }
 
     fn parse_heap(&self, data: &str, depth: usize) -> Result<String, String> {
-        self.parse_datatype(&data, depth) // Remove 'H' and parse recursively
+        let addr = &data[1..]; // Remove 'H'
+        if self.all_heap_addresses.contains_key(addr) {
+            let heap_data = self.all_heap_addresses.get(addr).unwrap();
+            self.parse_datatype(heap_data, depth)
+        } else {
+            Ok(format!("*U - {}", addr))
+        }
     }
 
     fn parse_bignum(&self, data: &str) -> Result<String, String> {

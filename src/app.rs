@@ -23,6 +23,7 @@ use ratatui::{
         Widget,
     },
 };
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::error;
 use std::io;
@@ -146,29 +147,59 @@ impl App<'_> {
         // we need to be able to sort an array based on the msgqlength as well
 
         //////////////// Individual Process View
-        let mut sorted_keys = ret
+        // let mut sorted_keys = ret
+        //     .crash_dump
+        //     .processes
+        //     .iter()
+        //     .collect::<Vec<(&String, &InfoOrIndex<ProcInfo>)>>();
+        // sorted_keys.sort_by(|a, b| match (a.1, b.1) {
+        //     (InfoOrIndex::Info(proc_info_a), InfoOrIndex::Info(proc_info_b)) => {
+        //         proc_info_b.memory.cmp(&proc_info_a.memory)
+        //     }
+        //     _ => unreachable!(),
+        // });
+
+        // let sorted_key_list = sorted_keys
+        //     .into_iter()
+        //     .map(|(key, _)| key.clone())
+        //     .collect::<Vec<String>>();
+
+        // ret.tab_lists.get_mut(&SelectedTab::Process).map(|val| {
+        //     *val = sorted_key_list;
+        // });
+
+        // let process_rows: Vec<Row> = ret.tab_lists[&SelectedTab::Process]
+        //     .iter()
+        //     .map(|pid| match ret.crash_dump.processes.get(pid).unwrap() {
+        //         InfoOrIndex::Info(proc_info) => {
+        //             let item = proc_info.ref_array();
+        //             Row::new(item)
+        //         }
+        //         _ => {
+        //             unreachable!();
+        //         }
+        //     })
+        //     .collect();
+        let mut sorted_keys: Vec<(&String, &InfoOrIndex<ProcInfo>)> = ret
             .crash_dump
             .processes
-            .iter()
-            .collect::<Vec<(&String, &InfoOrIndex<ProcInfo>)>>();
-        sorted_keys.sort_by(|a, b| match (a.1, b.1) {
+            .par_iter() // Use parallel iterator
+            .collect();
+        sorted_keys.par_sort_by(|a, b| match (a.1, b.1) {
             (InfoOrIndex::Info(proc_info_a), InfoOrIndex::Info(proc_info_b)) => {
-                proc_info_b.memory.cmp(&proc_info_a.memory)
+                proc_info_b.bin_vheap.cmp(&proc_info_a.bin_vheap)
             }
             _ => unreachable!(),
         });
-
-        let sorted_key_list = sorted_keys
-            .into_iter()
+        let sorted_key_list: Vec<String> = sorted_keys
+            .into_par_iter() // Use parallel iterator
             .map(|(key, _)| key.clone())
-            .collect::<Vec<String>>();
-
+            .collect();
         ret.tab_lists.get_mut(&SelectedTab::Process).map(|val| {
             *val = sorted_key_list;
         });
-
         let process_rows: Vec<Row> = ret.tab_lists[&SelectedTab::Process]
-            .iter()
+            .par_iter() // Use parallel iterator
             .map(|pid| match ret.crash_dump.processes.get(pid).unwrap() {
                 InfoOrIndex::Info(proc_info) => {
                     let item = proc_info.ref_array();
@@ -216,27 +247,23 @@ impl App<'_> {
 
         ///////// Process Group Info
 
-        let mut sorted_keys = ret
+        let mut sorted_keys: Vec<(&String, &GroupInfo)> = ret
             .crash_dump
             .group_info_map
-            .iter()
-            .collect::<Vec<(&String, &GroupInfo)>>();
-
-        sorted_keys.sort_by(|a, b| b.1.total_memory_size.cmp(&a.1.total_memory_size));
-
-        let sorted_key_list = sorted_keys
-            .into_iter()
+            .par_iter() // Use parallel iterator
+            .collect();
+        sorted_keys.par_sort_by(|a, b| b.1.total_memory_size.cmp(&a.1.total_memory_size));
+        let sorted_key_list: Vec<String> = sorted_keys
+            .into_par_iter() // Use parallel iterator
             .map(|(key, _)| key.clone())
-            .collect::<Vec<String>>();
-
+            .collect();
         ret.tab_lists
             .get_mut(&SelectedTab::ProcessGroup)
             .map(|val| {
                 *val = sorted_key_list;
             });
-
         let process_group_rows: Vec<Row> = ret.tab_lists[&SelectedTab::ProcessGroup]
-            .iter()
+            .par_iter() // Use parallel iterator
             .map(|group| {
                 let group_info = ret.crash_dump.group_info_map.get(group).unwrap();
                 let item = group_info.ref_array();
