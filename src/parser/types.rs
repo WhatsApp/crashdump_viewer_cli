@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span, Text};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -595,33 +597,78 @@ impl CrashDump {
         Ok(res.join("\n"))
     }
 
-    pub fn load_proc_stack(&self, index_row: &IndexRow, file: &mut File) -> io::Result<String> {
-        let contents = Self::load_section(index_row, file)?;
-        //println!("contents: {}", contents);
-        let mut res = Vec::new();
+    // pub fn load_proc_stack(&self, index_row: &IndexRow, file: &mut File) -> io::Result<Vec<Spans>> {
+    //     let contents = Self::load_section(index_row, file)?;
+    //     //println!("contents: {}", contents);
+    //     let mut res = Vec::new();
 
+    //     if let Ok(DumpSection::ProcStack(proc_stack)) =
+    //         parse_section(&contents, index_row.id.as_deref())
+    //     {
+    //         proc_stack.frames.into_iter().for_each(|frame| {
+    //             // decode the variables on the stack
+    //             let mut current_line_variables = Vec::new();
+
+    //             // println!("frame: {:?}", frame);
+    //             frame.variables.into_iter().for_each(|variable| {
+    //                 current_line_variables.push(self.parse_datatype(&variable, 0).unwrap());
+    //             });
+
+    //             res.push(format!(
+    //                 "{} - M: {} F: {} A: ({})",
+    //                 frame.address,
+    //                 frame.module,
+    //                 frame.function,
+    //                 current_line_variables.join(",")
+    //             ));
+    //             // res.push(format!("{} - {}", frame.address, frame.function));
+    //         });
+    //     }
+    //     Ok(res.join("\n"))
+    // }
+
+    pub fn load_proc_stack(&self, index_row: &IndexRow, file: &mut File) -> io::Result<Text> {
+        let contents = Self::load_section(index_row, file)?;
+        let mut text = Text::default();
+        let mut addr = String::new();
         if let Ok(DumpSection::ProcStack(proc_stack)) =
             parse_section(&contents, index_row.id.as_deref())
         {
             proc_stack.frames.into_iter().for_each(|frame| {
-                // decode the variables on the stack
                 let mut current_line_variables = Vec::new();
-
-                // println!("frame: {:?}", frame);
                 frame.variables.into_iter().for_each(|variable| {
                     current_line_variables.push(self.parse_datatype(&variable, 0).unwrap());
                 });
-
-                res.push(format!(
-                    "{} - {} ({})",
-                    frame.address,
-                    frame.function,
-                    current_line_variables.join(",")
-                ));
-                // res.push(format!("{} - {}", frame.address, frame.function));
+                let line = Line::from(vec![
+                    Span::styled(
+                        format!("{}", frame.address),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" - M: "),
+                    Span::styled(
+                        format!("{}", frame.module),
+                        Style::default().fg(Color::Green),
+                    ),
+                    Span::raw(" F: "),
+                    Span::styled(
+                        format!("{}", frame.function),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::raw(" A: ("),
+                    Span::styled(
+                        current_line_variables.join(","),
+                        Style::default().fg(Color::Magenta),
+                    ),
+                    Span::raw(")"),
+                ]);
+                // deduplication, if it's the same addr don't add it. Sometimes the frames have weird duplicates
+                if addr != frame.address {
+                    text.lines.push(line);
+                    addr = frame.address.clone();
+                }
             });
         }
-        Ok(res.join("\n"))
+        Ok(text)
     }
 
     fn parse_datatype(&self, data: &str, depth: usize) -> Result<String, String> {

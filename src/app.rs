@@ -52,6 +52,9 @@ pub struct App<'a> {
 
     pub table_states: HashMap<SelectedTab, TableState>,
 
+    pub process_group_table: Table<'a>,
+
+    pub process_view_table: Table<'a>,
     pub process_view_state: ProcessViewState,
 
     pub footer_text: HashMap<SelectedTab, String>,
@@ -101,7 +104,9 @@ impl Default for App<'_> {
             table_states: HashMap::from_iter(
                 SelectedTab::iter().map(|tab| (tab, TableState::default())),
             ),
+            process_group_table: Table::default(),
             process_view_state: ProcessViewState::default(),
+            process_view_table: Table::default(),
             footer_text: HashMap::new(),
         }
     }
@@ -140,15 +145,16 @@ impl App<'_> {
         // set the process list to be a tuple of [pid, name, heap_size, msgq_len]
         // we need to be able to sort an array based on the msgqlength as well
 
+        //////////////// Individual Process View
         let mut sorted_keys = ret
             .crash_dump
             .processes
             .iter()
             .collect::<Vec<(&String, &InfoOrIndex<ProcInfo>)>>();
         sorted_keys.sort_by(|a, b| match (a.1, b.1) {
-            (InfoOrIndex::Info(proc_info_a), InfoOrIndex::Info(proc_info_b)) => proc_info_b
-                .total_bin_vheap
-                .cmp(&proc_info_a.total_bin_vheap),
+            (InfoOrIndex::Info(proc_info_a), InfoOrIndex::Info(proc_info_b)) => {
+                proc_info_b.memory.cmp(&proc_info_a.memory)
+            }
             _ => unreachable!(),
         });
 
@@ -161,22 +167,54 @@ impl App<'_> {
             *val = sorted_key_list;
         });
 
-        ret.tab_rows.get_mut(&SelectedTab::Process).map(|val| {
-            let rows = ret.tab_lists[&SelectedTab::Process]
-                .iter()
-                .map(|pid| match ret.crash_dump.processes.get(pid).unwrap() {
-                    InfoOrIndex::Info(proc_info) => {
-                        let item = proc_info.ref_array();
-                        Row::new(item)
-                    }
-                    _ => {
-                        unreachable!();
-                    }
-                })
-                .collect();
+        let process_rows: Vec<Row> = ret.tab_lists[&SelectedTab::Process]
+            .iter()
+            .map(|pid| match ret.crash_dump.processes.get(pid).unwrap() {
+                InfoOrIndex::Info(proc_info) => {
+                    let item = proc_info.ref_array();
+                    Row::new(item)
+                }
+                _ => {
+                    unreachable!();
+                }
+            })
+            .collect();
 
-            *val = rows;
-        });
+        let selected_row_style = Style::default().fg(Color::White);
+        let selected_col_style = Style::default().fg(Color::White);
+        let selected_cell_style = Style::default().fg(Color::White);
+        let header_style = Style::default().fg(Color::White).bg(Color::Red);
+
+        let process_header = ProcInfo::headers()
+            .into_iter()
+            .map(Cell::from)
+            .collect::<Row>()
+            .style(header_style)
+            .height(1);
+
+        ret.process_view_table = Table::new(
+            process_rows,
+            [
+                Constraint::Length(15),
+                Constraint::Length(25),
+                Constraint::Length(25),
+                Constraint::Length(25),
+                Constraint::Length(25),
+                Constraint::Length(25),
+                Constraint::Length(25),
+                Constraint::Length(25),
+                Constraint::Length(25),
+            ],
+        )
+        .header(process_header)
+        .row_highlight_style(selected_row_style)
+        .column_highlight_style(selected_col_style)
+        .cell_highlight_style(selected_cell_style)
+        .highlight_spacing(HighlightSpacing::Always)
+        .block(Block::bordered().title(SelectedTab::Process.to_string()))
+        .highlight_style(Style::default().bg(Color::Blue));
+
+        ///////// Process Group Info
 
         let mut sorted_keys = ret
             .crash_dump
@@ -197,17 +235,38 @@ impl App<'_> {
                 *val = sorted_key_list;
             });
 
-        ret.tab_rows.get_mut(&SelectedTab::ProcessGroup).map(|val| {
-            let rows: Vec<Row> = ret.tab_lists[&SelectedTab::ProcessGroup]
-                .iter()
-                .map(|group| {
-                    let group_info = ret.crash_dump.group_info_map.get(group).unwrap();
-                    let item = group_info.ref_array();
-                    Row::new(item)
-                })
-                .collect();
-            *val = rows;
-        });
+        let process_group_rows: Vec<Row> = ret.tab_lists[&SelectedTab::ProcessGroup]
+            .iter()
+            .map(|group| {
+                let group_info = ret.crash_dump.group_info_map.get(group).unwrap();
+                let item = group_info.ref_array();
+                Row::new(item)
+            })
+            .collect();
+
+        let process_group_headers = GroupInfo::headers()
+            .into_iter()
+            .map(Cell::from)
+            .collect::<Row>()
+            .style(header_style)
+            .height(1);
+
+        ret.process_group_table = Table::new(
+            process_group_rows,
+            [
+                Constraint::Length(30),
+                Constraint::Length(30),
+                Constraint::Length(30),
+                Constraint::Length(30),
+            ],
+        )
+        .header(process_group_headers)
+        .row_highlight_style(selected_row_style)
+        .column_highlight_style(selected_col_style)
+        .cell_highlight_style(selected_cell_style)
+        .highlight_spacing(HighlightSpacing::Always)
+        .block(Block::bordered().title(SelectedTab::Process.to_string()))
+        .highlight_style(Style::default().bg(Color::Blue));
 
         ret.footer_text.insert(SelectedTab::Process, "Press S for Stack, H for Heap, M for Message Queue | < > to change tabs | Press q to quit".to_string());
 
@@ -253,7 +312,7 @@ impl App<'_> {
             .get_heap_info(&self.crash_dump, &self.filepath, pid)
     }
 
-    pub fn get_stack_info(&self, pid: &str) -> io::Result<String> {
+    pub fn get_stack_info(&self, pid: &str) -> io::Result<Text> {
         self.parser
             .get_stack_info(&self.crash_dump, &self.filepath, pid)
         // Ok("".to_string())
@@ -413,49 +472,16 @@ impl SelectedTab {
             .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
             .split(outer_layout[1]);
 
-        let header_style = Style::default().fg(Color::White).bg(Color::Red);
-        let selected_row_style = Style::default().fg(Color::White);
-        let selected_col_style = Style::default().fg(Color::White);
-        let selected_cell_style = Style::default().fg(Color::White);
-
-        let header = ProcInfo::headers()
-            .into_iter()
-            .map(Cell::from)
-            .collect::<Row>()
-            .style(header_style)
-            .height(1);
-
-        // TODO: THIS IS OBVIOUSLY SUPER GROSS, FIX THIS
-        let rows = app.tab_rows[&SelectedTab::Process].clone();
-
-        let binding = SelectedTab::Process.to_string();
-        let table = Table::new(
-            rows,
-            [
-                Constraint::Length(15),
-                Constraint::Length(25),
-                Constraint::Length(25),
-                Constraint::Length(25),
-                Constraint::Length(25),
-                Constraint::Length(25),
-                Constraint::Length(25),
-                Constraint::Length(25),
-                Constraint::Length(25),
-            ],
-        )
-        .header(header)
-        .row_highlight_style(selected_row_style)
-        .column_highlight_style(selected_col_style)
-        .cell_highlight_style(selected_cell_style)
-        .highlight_spacing(HighlightSpacing::Always)
-        .block(Block::bordered().title(binding.as_str()))
-        .highlight_style(Style::default().bg(Color::Blue));
-
         let selected_item;
         {
             let process_table_state = app.table_states.get_mut(&SelectedTab::Process).unwrap();
             selected_item = process_table_state.selected().unwrap_or(0);
-            StatefulWidget::render(table, outer_layout[0], buf, process_table_state);
+            StatefulWidget::render(
+                &app.process_view_table,
+                outer_layout[0],
+                buf,
+                process_table_state,
+            );
         }
 
         let selected_pid = &app.tab_lists[&SelectedTab::Process][selected_item];
@@ -468,8 +494,9 @@ impl SelectedTab {
 
         let (inspect_info_title, inspect_info_text) = match app.process_view_state {
             ProcessViewState::Stack => ("Decoded Stack", app.get_stack_info(selected_pid).unwrap()),
-            ProcessViewState::Heap => ("Decoded Heap", app.get_heap_info(selected_pid).unwrap()),
-            ProcessViewState::MessageQueue => ("Decoded Message Queue", "".to_string()),
+            _ => todo!(),
+            // ProcessViewState::Heap => ("Decoded Heap", app.get_heap_info(selected_pid).unwrap()),
+            // ProcessViewState::MessageQueue => ("Decoded Message Queue", "".to_string()),
         };
 
         //println!("heap info text: {}", heap_info_text);
@@ -505,21 +532,6 @@ impl SelectedTab {
             .get_mut(&SelectedTab::ProcessGroup)
             .unwrap();
 
-        let header_style = Style::default().fg(Color::White).bg(Color::Red);
-        let selected_row_style = Style::default().fg(Color::White);
-        let selected_col_style = Style::default().fg(Color::White);
-        let selected_cell_style = Style::default().fg(Color::White);
-
-        let header = GroupInfo::headers()
-            .into_iter()
-            .map(Cell::from)
-            .collect::<Row>()
-            .style(header_style)
-            .height(1);
-
-        // TODO: THIS IS OBVIOUSLY SUPER GROSS, FIX THIS
-        let rows = app.tab_rows[&SelectedTab::ProcessGroup].clone();
-
         let selected_item = group_table_state.selected().unwrap_or(0);
         let selected_pid = &app.tab_lists[&SelectedTab::ProcessGroup][selected_item];
         let selected_process = app.crash_dump.processes.get(selected_pid);
@@ -536,24 +548,6 @@ impl SelectedTab {
             _ => "No group info found".to_string(),
         };
 
-        let binding = SelectedTab::Process.to_string();
-        let table = Table::new(
-            rows,
-            [
-                Constraint::Length(30),
-                Constraint::Length(30),
-                Constraint::Length(30),
-                Constraint::Length(30),
-            ],
-        )
-        .header(header)
-        .row_highlight_style(selected_row_style)
-        .column_highlight_style(selected_col_style)
-        .cell_highlight_style(selected_cell_style)
-        .highlight_spacing(HighlightSpacing::Always)
-        .block(Block::bordered().title(binding.as_str()))
-        .highlight_style(Style::default().bg(Color::Blue));
-
         let children_block = Paragraph::new(group_info_text)
             .block(Block::bordered().title("Group Children"))
             .style(Style::default().fg(Color::White))
@@ -566,7 +560,12 @@ impl SelectedTab {
 
         Widget::render(&children_block, inner_layout[0], buf);
         Widget::render(&detail_block, inner_layout[1], buf);
-        StatefulWidget::render(&table, outer_layout[0], buf, group_table_state);
+        StatefulWidget::render(
+            &app.process_group_table,
+            outer_layout[0],
+            buf,
+            group_table_state,
+        );
     }
 
     const fn palette(self) -> tailwind::Palette {

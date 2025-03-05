@@ -18,6 +18,8 @@ use grep::{
     searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch},
 };
 // use rayon::prelude::*;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span, Text};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
@@ -219,12 +221,12 @@ impl CDParser {
         Ok("".to_string())
     }
 
-    pub fn get_stack_info(
+    pub fn get_stack_info<'a>(
         &self,
-        crash_dump: &CrashDump,
+        crash_dump: &'a CrashDump,
         filepath: &String,
         id: &str,
-    ) -> io::Result<String> {
+    ) -> io::Result<Text<'a>> {
         // seeks to the file using the byteoffsets in the dict and just retrives the raw data
         //println!("{:?}", filepath);
         //println!("{:?}, {:#?}", id, crash_dump.processes_heap.get(id));
@@ -233,7 +235,7 @@ impl CDParser {
 
             return crash_dump.load_proc_stack(stack_index, &mut file);
         }
-        Ok("".to_string())
+        Ok(Text::from(""))
     }
 
     pub fn calculate_group_info(
