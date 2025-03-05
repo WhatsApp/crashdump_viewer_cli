@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::app::{App, AppResult};
+use crate::app::{App, AppResult, ProcessViewState, SelectedTab};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Handles the key events and updates the state of [`App`].
@@ -29,8 +29,8 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
             }
         }
         // Tab switching
-        KeyCode::Char('l') | KeyCode::Right => app.next_tab(),
-        KeyCode::Char('h') | KeyCode::Left => app.prev_tab(),
+        KeyCode::Right => app.next_tab(),
+        KeyCode::Left => app.prev_tab(),
 
         KeyCode::Down => {
             if let Some(table_state) = app.table_states.get_mut(&app.selected_tab) {
@@ -42,6 +42,24 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
                         table_state.select(Some(selected + 1));
                     }
                 }
+            }
+        }
+
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            if app.selected_tab == SelectedTab::Process {
+                app.process_view_state = ProcessViewState::Stack;
+            }
+        }
+
+        KeyCode::Char('h') | KeyCode::Char('H') => {
+            if app.selected_tab == SelectedTab::Process {
+                app.process_view_state = ProcessViewState::Heap;
+            }
+        }
+
+        KeyCode::Char('m') | KeyCode::Char('M') => {
+            if app.selected_tab == SelectedTab::Process {
+                app.process_view_state = ProcessViewState::MessageQueue;
             }
         }
 

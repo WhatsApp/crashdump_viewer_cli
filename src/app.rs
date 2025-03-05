@@ -19,8 +19,8 @@ use ratatui::{
     style::{palette::tailwind, Color, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{
-        Block, Cell, HighlightSpacing,
-        Paragraph, Row, StatefulWidget, Table, TableState, Tabs, Widget,
+        Block, Cell, HighlightSpacing, Paragraph, Row, StatefulWidget, Table, TableState, Tabs,
+        Widget,
     },
 };
 use std::collections::HashMap;
@@ -33,7 +33,7 @@ use strum_macros::{Display, EnumIter, FromRepr};
 pub type AppResult<T> = std::result::Result<T, Box<dyn error::Error>>;
 
 /// Application.
-pub struct App {
+pub struct App<'a> {
     /// header
     pub header: String,
     pub state: AppState,
@@ -48,8 +48,13 @@ pub struct App {
 
     /// process information list
     pub tab_lists: HashMap<SelectedTab, Vec<String>>,
+    pub tab_rows: HashMap<SelectedTab, Vec<Row<'a>>>,
 
     pub table_states: HashMap<SelectedTab, TableState>,
+
+    pub process_view_state: ProcessViewState,
+
+    pub footer_text: HashMap<SelectedTab, String>,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +62,14 @@ pub enum AppState {
     #[default]
     Running,
     Quitting,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessViewState {
+    Heap,
+    #[default]
+    Stack,
+    MessageQueue,
 }
 
 #[derive(Default, Clone, Copy, Display, FromRepr, EnumIter, PartialEq, Eq, Hash)]
@@ -72,7 +85,7 @@ pub enum SelectedTab {
     Process,
 }
 
-impl Default for App {
+impl Default for App<'_> {
     fn default() -> Self {
         Self {
             state: AppState::Running,
@@ -84,14 +97,17 @@ impl Default for App {
             ancestor_map: HashMap::new(),
             header: "ERL CRASH DUMP VIEWER".to_string(),
             tab_lists: HashMap::from_iter(SelectedTab::iter().map(|tab| (tab, vec![]))),
+            tab_rows: HashMap::from_iter(SelectedTab::iter().map(|tab| (tab, vec![]))),
             table_states: HashMap::from_iter(
                 SelectedTab::iter().map(|tab| (tab, TableState::default())),
             ),
+            process_view_state: ProcessViewState::default(),
+            footer_text: HashMap::new(),
         }
     }
 }
 
-impl App {
+impl App<'_> {
     /// Constructs a new instance of [`App`].
     pub fn new(filepath: String) -> Self {
         let parser = parser::CDParser::new(&filepath).unwrap();
@@ -100,6 +116,7 @@ impl App {
         let mut ret = Self::default();
         ret.filepath = filepath.clone();
         ret.index_map = idx.clone();
+        ret.process_view_state = ProcessViewState::default();
 
         // store the index
         // let idx_str = parser::CDParser::format_index(&idx);
@@ -144,17 +161,22 @@ impl App {
             *val = sorted_key_list;
         });
 
-        // ret.tab_lists
-        //     .get_mut(&SelectedTab::ProcessGroup)
-        //     .map(|val| {
-        //         *val = ret
-        //             .crash_dump
-        //             .group_info_map
-        //             .keys()
-        //             .cloned()
-        //             .collect::<Vec<String>>();
-        //         val.sort();
-        //     });
+        ret.tab_rows.get_mut(&SelectedTab::Process).map(|val| {
+            let rows = ret.tab_lists[&SelectedTab::Process]
+                .iter()
+                .map(|pid| match ret.crash_dump.processes.get(pid).unwrap() {
+                    InfoOrIndex::Info(proc_info) => {
+                        let item = proc_info.ref_array();
+                        Row::new(item)
+                    }
+                    _ => {
+                        unreachable!();
+                    }
+                })
+                .collect();
+
+            *val = rows;
+        });
 
         let mut sorted_keys = ret
             .crash_dump
@@ -174,6 +196,20 @@ impl App {
             .map(|val| {
                 *val = sorted_key_list;
             });
+
+        ret.tab_rows.get_mut(&SelectedTab::ProcessGroup).map(|val| {
+            let rows: Vec<Row> = ret.tab_lists[&SelectedTab::ProcessGroup]
+                .iter()
+                .map(|group| {
+                    let group_info = ret.crash_dump.group_info_map.get(group).unwrap();
+                    let item = group_info.ref_array();
+                    Row::new(item)
+                })
+                .collect();
+            *val = rows;
+        });
+
+        ret.footer_text.insert(SelectedTab::Process, "Press S for Stack, H for Heap, M for Message Queue | < > to change tabs | Press q to quit".to_string());
 
         // if let Some(state) = ret.table_states.get_mut(&SelectedTab::Index) {
         //     if !ret.tab_lists[&SelectedTab::Index].is_empty() {
@@ -216,10 +252,16 @@ impl App {
         self.parser
             .get_heap_info(&self.crash_dump, &self.filepath, pid)
     }
+
+    pub fn get_stack_info(&self, pid: &str) -> io::Result<String> {
+        self.parser
+            .get_stack_info(&self.crash_dump, &self.filepath, pid)
+        // Ok("".to_string())
+    }
 }
 
 // Separated because this is the UI code. We need this here in order to render stuff *within* App state
-impl App {
+impl App<'_> {
     pub fn render_tabs(&self, area: Rect, buf: &mut Buffer) {
         let titles = SelectedTab::iter().map(SelectedTab::title);
         let highlight_style = (Color::default(), self.selected_tab.palette().c700);
@@ -233,7 +275,7 @@ impl App {
     }
 }
 
-impl Widget for &mut App {
+impl Widget for &mut App<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
         let vertical = Layout::vertical([Length(1), Min(0), Length(1)]);
@@ -250,9 +292,13 @@ impl Widget for &mut App {
             SelectedTab::Process => self.selected_tab.render_process(inner_area, buf, self),
             SelectedTab::ProcessGroup => self
                 .selected_tab
-                .render_process_group(inner_area, buf, self)
+                .render_process_group(inner_area, buf, self),
         }
-        render_footer(footer_area, buf);
+        let footer_text = self
+            .footer_text
+            .get(&self.selected_tab)
+            .map_or("< > to change tabs | Press q to quit", |v| v);
+        render_footer(footer_text, footer_area, buf);
     }
 }
 
@@ -379,17 +425,8 @@ impl SelectedTab {
             .style(header_style)
             .height(1);
 
-        let rows = app.tab_lists[&SelectedTab::Process].iter().map(|pid| {
-            match app.crash_dump.processes.get(pid).unwrap() {
-                InfoOrIndex::Info(proc_info) => {
-                    let item = proc_info.ref_array();
-                    Row::new(item)
-                }
-                _ => {
-                    unreachable!();
-                }
-            }
-        });
+        // TODO: THIS IS OBVIOUSLY SUPER GROSS, FIX THIS
+        let rows = app.tab_rows[&SelectedTab::Process].clone();
 
         let binding = SelectedTab::Process.to_string();
         let table = Table::new(
@@ -429,7 +466,12 @@ impl SelectedTab {
             InfoOrIndex::Index(_) => unreachable!(),
         };
 
-        let heap_info_text = app.get_heap_info(selected_pid).unwrap();
+        let (inspect_info_title, inspect_info_text) = match app.process_view_state {
+            ProcessViewState::Stack => ("Decoded Stack", app.get_stack_info(selected_pid).unwrap()),
+            ProcessViewState::Heap => ("Decoded Heap", app.get_heap_info(selected_pid).unwrap()),
+            ProcessViewState::MessageQueue => ("Decoded Message Queue", "".to_string()),
+        };
+
         //println!("heap info text: {}", heap_info_text);
 
         let detail_block = Paragraph::new(process_info_text)
@@ -437,8 +479,8 @@ impl SelectedTab {
             .style(Style::default().fg(Color::White))
             .alignment(Alignment::Left);
 
-        let proc_heap = Paragraph::new(heap_info_text)
-            .block(Block::bordered().title("Decoded Process Heap"))
+        let proc_heap = Paragraph::new(inspect_info_text)
+            .block(Block::bordered().title(inspect_info_title))
             .style(Style::default().fg(Color::White))
             .alignment(Alignment::Left);
 
@@ -475,14 +517,8 @@ impl SelectedTab {
             .style(header_style)
             .height(1);
 
-        let rows = app.tab_lists[&SelectedTab::ProcessGroup]
-            .iter()
-            .enumerate()
-            .map(|(_i, group)| {
-                let group_info = app.crash_dump.group_info_map.get(group).unwrap();
-                let item = group_info.ref_array();
-                Row::new(item)
-            });
+        // TODO: THIS IS OBVIOUSLY SUPER GROSS, FIX THIS
+        let rows = app.tab_rows[&SelectedTab::ProcessGroup].clone();
 
         let selected_item = group_table_state.selected().unwrap_or(0);
         let selected_pid = &app.tab_lists[&SelectedTab::ProcessGroup][selected_item];
@@ -544,11 +580,9 @@ impl SelectedTab {
 }
 
 fn render_title(area: Rect, buf: &mut Buffer) {
-    "ERL Crash Dump Viewer".render(area, buf);
+    "ERL Crash Dump".render(area, buf);
 }
 
-fn render_footer(area: Rect, buf: &mut Buffer) {
-    Line::raw("< > to change tabs | Press q to quit")
-        .centered()
-        .render(area, buf);
+fn render_footer(footer_text: &str, area: Rect, buf: &mut Buffer) {
+    Line::raw(footer_text).centered().render(area, buf);
 }

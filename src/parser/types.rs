@@ -115,7 +115,7 @@ pub enum DumpSection {
     // Node(NodeInfo),
     Proc(ProcInfo),
     // ProcHeap(ProcHeapInfo),
-    // ProcStack(ProcStackInfo),
+    ProcStack(ProcStackInfo),
     // Scheduler(SchedulerInfo),
     // Ets(EtsInfo),
     // Timer(TimerInfo),
@@ -136,7 +136,6 @@ pub struct GenericSection {
     //   items: Vec<HashMap<String, String>>, // For lists of items
     raw_lines: Vec<String>, // For raw lines without key-value pairs
 }
-
 
 // TODO: once the format is stablized we can implement this trait
 // pub trait FromGenericSection: Sized {
@@ -163,21 +162,24 @@ impl FromStr for GenericSection {
         //    let mut items = Vec::new();
         let mut raw_lines = Vec::new();
 
-        for line in lines {
-            let parts: Vec<&str> = line.splitn(2, ": ").collect();
-            if parts.len() == 2 {
-                // key-value pair
-                let key = parts[0].trim().to_string();
-                let value = parts[1].trim().to_string();
+        if tag == TAG_PROC_STACK {
+            // because the stack has repeating keys, in the y registers, we need to parse it different
+            for line in lines {
+                raw_lines.push(line.to_string());
+            }
+        } else {
+            for line in lines {
+                let parts: Vec<&str> = line.splitn(2, ": ").collect();
+                if parts.len() == 2 {
+                    // key-value pair
+                    let key = parts[0].trim().to_string();
+                    let value = parts[1].trim().to_string();
 
-                data.insert(key, value);
-            } else if line.starts_with("0x") {
-                // Special handling for lines starting with "0x"
-                // (e.g., in the Stack Trace section)
-                raw_lines.push(line.to_string());
-            } else {
-                // raw line
-                raw_lines.push(line.to_string());
+                    data.insert(key, value);
+                } else {
+                    // raw line
+                    raw_lines.push(line.to_string());
+                }
             }
         }
 
@@ -261,6 +263,10 @@ fn parse_section(s: &str, id: Option<&str>) -> Result<DumpSection, String> {
         Tag::Memory => DumpSection::Memory(MemoryInfo::from_generic_section(&data)),
 
         Tag::Proc => DumpSection::Proc(ProcInfo::from_generic_section(&section)),
+
+        Tag::ProcStack => {
+            DumpSection::ProcStack(ProcStackInfo::from_generic_section(&section).unwrap())
+        }
 
         _ => DumpSection::Generic(section),
     };
@@ -459,6 +465,12 @@ impl CrashDump {
                                 }
                             }
 
+                            Tag::ProcStack => {
+                                crash_dump
+                                    .processes_stack
+                                    .insert(id.clone(), InfoOrIndex::Index(index_row.clone()));
+                            }
+
                             Tag::Binary => {
                                 // binaries are structured like `=binary:FFFF4D7B8C88`, we only need to know the size
                                 if let Some(binary_id) = &index_row.id {
@@ -549,23 +561,64 @@ impl CrashDump {
 
     pub fn load_proc_heap(&self, index_row: &IndexRow, file: &mut File) -> io::Result<String> {
         let contents = Self::load_section(index_row, file)?;
+        //println!("contents: {}", contents);
+        let mut res = Vec::new();
+        match parse_section(&contents, index_row.id.as_deref()) {
+            Ok(DumpSection::Generic(proc_heap)) => {
+                //      println!("proc_heap: {:?}", proc_heap.raw_lines);
+                proc_heap.raw_lines.into_iter().for_each(|line| {
+                    let parts: Vec<&str> = line.splitn(2, ':').collect();
+                    //        println!("parts: {:?}", parts);
+                    if parts.len() == 2 {
+                        let addr = parts[0];
+                        match self.parse_datatype(parts[1], 0) {
+                            Ok(parsed_res) => res.push(format!("{} - {}", addr, parsed_res)),
+                            Err(err) => res.push(format!("{} - Error: {}", addr, err)), // Handle error
+                        }
+                    } else {
+                        res.push(line.to_string());
+                    }
+                });
+            }
+            Err(err) => {
+                // Return the error from parse_section
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Parse error: {}", err),
+                ));
+            }
+            _ => {
+                // Handle other cases if necessary
+            }
+        }
+        //println!("res: {}", res.join("\n"));
+        Ok(res.join("\n"))
+    }
 
+    pub fn load_proc_stack(&self, index_row: &IndexRow, file: &mut File) -> io::Result<String> {
+        let contents = Self::load_section(index_row, file)?;
+        //println!("contents: {}", contents);
         let mut res = Vec::new();
 
-        if let Ok(DumpSection::Generic(proc_heap)) =
+        if let Ok(DumpSection::ProcStack(proc_stack)) =
             parse_section(&contents, index_row.id.as_deref())
         {
-            proc_heap.raw_lines.into_iter().for_each(|line| {
-                let parts: Vec<&str> = line.splitn(2, ':').collect();
-                if parts.len() == 2 {
-                    let addr = parts[0];
-                    match self.parse_datatype(parts[1], 0) {
-                        Ok(parsed_res) => res.push(format!("{} - {}", addr, parsed_res)),
-                        Err(err) => res.push(format!("{} - Error: {}", addr, err)), // Handle error
-                    }
-                } else {
-                    res.push(line.to_string());
-                }
+            proc_stack.frames.into_iter().for_each(|frame| {
+                // decode the variables on the stack
+                let mut current_line_variables = Vec::new();
+
+                // println!("frame: {:?}", frame);
+                frame.variables.into_iter().for_each(|variable| {
+                    current_line_variables.push(self.parse_datatype(&variable, 0).unwrap());
+                });
+
+                res.push(format!(
+                    "{} - {} ({})",
+                    frame.address,
+                    frame.function,
+                    current_line_variables.join(",")
+                ));
+                // res.push(format!("{} - {}", frame.address, frame.function));
             });
         }
         Ok(res.join("\n"))
@@ -591,10 +644,21 @@ impl CrashDump {
             Some('Y') => self.parse_binary(data),
             Some('M') => self.parse_map(data, depth),
             Some('R') => self.parse_funref(data),
+            Some('S') => Ok(self.parse_string(data)),
             _ => Ok(format!(
                 "---don't know how to parse {} at depth {}---",
                 data, depth
             )),
+        }
+    }
+
+    // for now treat S as a string
+    fn parse_string(&self, data: &str) -> String {
+        let parts: Vec<&str> = data.splitn(2, ':').collect();
+        if parts.len() > 1 {
+            parts[1].to_string()
+        } else {
+            "".to_string()
         }
     }
 
@@ -1090,68 +1154,68 @@ Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\n{:#?}\nInternal Sta
     }
 
     pub fn from_generic_section(section: &GenericSection) -> Self {
-            // link_list might be optional or nonexistent
-            // any of these fields might be optional or nonexistent
-            let id = section.id.clone().unwrap_or_else(|| "".to_string());
-            let raw_lines = &section.raw_lines;
-            let data = &section.data;        
+        // link_list might be optional or nonexistent
+        // any of these fields might be optional or nonexistent
+        let id = section.id.clone().unwrap_or_else(|| "".to_string());
+        let raw_lines = &section.raw_lines;
+        let data = &section.data;
 
-            let link_list: Vec<String> = data
-                .get("Link list")
-                .map(|s| {
-                    s.trim_matches(|c| c == '[' || c == ']')
-                        .split(", ")
-                        .map(|s| s.to_string())
-                        .collect()
-                })
-                .unwrap_or_default();
+        let link_list: Vec<String> = data
+            .get("Link list")
+            .map(|s| {
+                s.trim_matches(|c| c == '[' || c == ']')
+                    .split(", ")
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
 
-            let internal_state: Vec<String> = data
-                .get("Internal State")
-                .map(|s| s.split(" | ").map(|s| s.to_string()).collect())
-                .unwrap_or_default();
+        let internal_state: Vec<String> = data
+            .get("Internal State")
+            .map(|s| s.split(" | ").map(|s| s.to_string()).collect())
+            .unwrap_or_default();
 
-            let program_counter: Option<ProgramCounter> = data
-                .get("Program counter")
-                .map(|s| ProgramCounter::from_string(s))
-                .unwrap_or_default();
+        let program_counter: Option<ProgramCounter> = data
+            .get("Program counter")
+            .map(|s| ProgramCounter::from_string(s))
+            .unwrap_or_default();
 
-            let mut proc = ProcInfo {
-                pid: id,
-                state: data["State"].clone(),
-                name: Some(
-                    data.get("Name")
-                        .map(|s| s.clone())
-                        .unwrap_or("".to_string()),
-                ),
+        let mut proc = ProcInfo {
+            pid: id,
+            state: data["State"].clone(),
+            name: Some(
+                data.get("Name")
+                    .map(|s| s.clone())
+                    .unwrap_or("".to_string()),
+            ),
 
-                spawned_as: data.get("Spawned as").cloned().filter(|s| !s.is_empty()),
-                spawned_by: data.get("Spawned by").cloned().filter(|s| !s.is_empty()),
+            spawned_as: data.get("Spawned as").cloned().filter(|s| !s.is_empty()),
+            spawned_by: data.get("Spawned by").cloned().filter(|s| !s.is_empty()),
 
-                message_queue_length: data["Message queue length"].parse::<i64>().unwrap_or(0),
-                number_of_heap_fragments: data["Number of heap fragments"].parse().unwrap_or(0),
-                heap_fragment_data: data["Heap fragment data"].parse().unwrap_or(0),
-                link_list: link_list,
-                program_counter: program_counter.unwrap_or_default(),
-                reductions: data["Reductions"].parse::<i64>().unwrap_or(0),
-                stack_heap: data["Stack+heap"].parse::<i64>().unwrap_or(0),
-                old_heap: data["OldHeap"].parse::<i64>().unwrap_or(0),
-                heap_unused: data["Heap unused"].parse::<i64>().unwrap_or(0),
-                old_heap_unused: data["OldHeap unused"].parse::<i64>().unwrap_or(0),
-                bin_vheap: data["BinVHeap"].parse::<i64>().unwrap_or(0),
-                old_bin_vheap: data["OldBinVHeap"].parse::<i64>().unwrap_or(0),
-                memory: data["Memory"].parse::<i64>().unwrap_or(0),
-                bin_vheap_unused: data["BinVHeap unused"].parse::<i64>().unwrap_or(0),
-                old_bin_vheap_unused: data["OldBinVHeap unused"].parse::<i64>().unwrap_or(0),
-                total_bin_vheap: 0,
-                //arity: raw_lines[0].split("=").last().unwrap().parse::<i64>().unwrap(),
-                arity: 0,
-                internal_state: internal_state,
-            };
+            message_queue_length: data["Message queue length"].parse::<i64>().unwrap_or(0),
+            number_of_heap_fragments: data["Number of heap fragments"].parse().unwrap_or(0),
+            heap_fragment_data: data["Heap fragment data"].parse().unwrap_or(0),
+            link_list: link_list,
+            program_counter: program_counter.unwrap_or_default(),
+            reductions: data["Reductions"].parse::<i64>().unwrap_or(0),
+            stack_heap: data["Stack+heap"].parse::<i64>().unwrap_or(0),
+            old_heap: data["OldHeap"].parse::<i64>().unwrap_or(0),
+            heap_unused: data["Heap unused"].parse::<i64>().unwrap_or(0),
+            old_heap_unused: data["OldHeap unused"].parse::<i64>().unwrap_or(0),
+            bin_vheap: data["BinVHeap"].parse::<i64>().unwrap_or(0),
+            old_bin_vheap: data["OldBinVHeap"].parse::<i64>().unwrap_or(0),
+            memory: data["Memory"].parse::<i64>().unwrap_or(0),
+            bin_vheap_unused: data["BinVHeap unused"].parse::<i64>().unwrap_or(0),
+            old_bin_vheap_unused: data["OldBinVHeap unused"].parse::<i64>().unwrap_or(0),
+            total_bin_vheap: 0,
+            //arity: raw_lines[0].split("=").last().unwrap().parse::<i64>().unwrap(),
+            arity: 0,
+            internal_state: internal_state,
+        };
 
-            proc.total_bin_vheap = proc.bin_vheap + proc.old_bin_vheap;
+        proc.total_bin_vheap = proc.bin_vheap + proc.old_bin_vheap;
 
-            proc
+        proc
     }
 }
 
@@ -1292,37 +1356,26 @@ pub struct NodeInfo {
     pub status: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
 pub struct ProcStackInfo {
     pub pid: String,
-    pub variables: HashMap<String, Value>,
     pub frames: Vec<StackFrame>,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)] 
-pub struct StackFrame {
-    pub address: String,       // Added: Address of the stack frame (the 0x... line)
-    pub return_addr: String,
-    pub function: String,
-    pub module: String, // Add module
-    pub offset: usize,      // Changed to usize
-    pub arity: usize,       // Changed to usize
-    pub variables: HashMap<String, String>, // Simplified to String:String
-}
-impl StackFrame {
+impl ProcStackInfo {
     pub fn from_generic_section(section: &GenericSection) -> Result<Self, String> {
         if section.tag != "proc_stack" {
             return Err("Not a proc_stack section".to_string());
         }
+        let mut total_frames = Vec::new();
+        let mut current_frame_args = Vec::new();
 
-        let mut arguments = HashMap::new();
         let mut frame_address = String::new();
         let mut return_addr = String::new();
         let mut function = String::new();
         let mut module = String::new();
         let mut offset = 0;
         let mut arity = 0;
-
 
         // More generic regex to capture function info.
         let re_func_info = Regex::new(
@@ -1333,49 +1386,86 @@ impl StackFrame {
             r"^(?P<address>0x[0-9A-Fa-f]+):S(?:Return addr|Catch)\s+(?P<retaddr>0x[0-9A-Fa-f]+)\s+\((?P<function><[^>]+>)\)",
         ).unwrap();
 
+        let mut current_frame = StackFrame {
+            address: frame_address.clone(),
+            return_addr: return_addr.clone(),
+            function: function.clone(),
+            module: module.clone(),
+            offset,
+            arity,
+            variables: current_frame_args.clone(),
+        };
+
         for line in &section.raw_lines {
-                if line.starts_with("y") {
-                    let parts: Vec<&str> = line.splitn(2, ":").collect();
-                    if parts.len() == 2 {
-                        let arg_name = parts[0].trim().to_string();
-                        let arg_value = parts[1].trim().to_string();
-                        arguments.insert(arg_name, arg_value); // Store in variables
-                    }
-                } else if line.starts_with("0x") {
-                    // Try the no-module regex first
-                    if let Some(caps) = re_no_module.captures(line) {
-                        frame_address = caps.name("address").unwrap().as_str().to_string();
-                        return_addr = caps.name("retaddr").unwrap().as_str().to_string();
-                        function = caps.name("function").unwrap().as_str().to_string();
-                        // No module, arity, or offset in this case.
+            // iterate through the lines, decoding and collecting the values as you go
+            // once we hit a 0x line, we have a frame, so pop whatever we had before that into a string
+            if line.starts_with("y") {
+                let parts: Vec<&str> = line.splitn(2, ":").collect();
+                if parts.len() == 2 {
+                    let arg_value = parts[1].trim().to_string();
+                    current_frame_args.push(arg_value);
+                }
+            } else if line.starts_with("0x") {
+                // push the previous frame into the total_frames vector
+                current_frame.variables = current_frame_args.clone(); // Add the arguments to the current frame
+                total_frames.push(current_frame.clone()); // Push the current frame into the total_frames vector
+                current_frame_args = Vec::new(); // Reset the current frame arguments
 
-                    }
-                    else if let Some(caps) = re_func_info.captures(line) {
-                        frame_address = caps.name("address").unwrap().as_str().to_string();
-                        return_addr = caps.name("retaddr").unwrap().as_str().to_string();
-                        function = caps.name("function").unwrap().as_str().to_string();
-                        module = caps.name("module").unwrap().as_str().to_string();
-                        arity = caps.name("arity").unwrap().as_str().parse::<usize>().unwrap();
-                        offset = caps.name("offset").unwrap().as_str().parse::<usize>().unwrap();
+                // Try the no-module regex first
+                if let Some(caps) = re_no_module.captures(line) {
+                    frame_address = caps.name("address").unwrap().as_str().to_string();
+                    return_addr = caps.name("retaddr").unwrap().as_str().to_string();
+                    function = caps.name("function").unwrap().as_str().to_string();
+                    // No module, arity, or offset in this case.
+                } else if let Some(caps) = re_func_info.captures(line) {
+                    frame_address = caps.name("address").unwrap().as_str().to_string();
+                    return_addr = caps.name("retaddr").unwrap().as_str().to_string();
+                    function = caps.name("function").unwrap().as_str().to_string();
+                    module = caps.name("module").unwrap().as_str().to_string();
+                    arity = caps
+                        .name("arity")
+                        .unwrap()
+                        .as_str()
+                        .parse::<usize>()
+                        .unwrap();
+                    offset = caps
+                        .name("offset")
+                        .unwrap()
+                        .as_str()
+                        .parse::<usize>()
+                        .unwrap();
+                }
 
-                    } else {
-                        return Err(format!("Invalid 0x line format: {}", line));
-                    }
+                current_frame = StackFrame {
+                    address: frame_address.clone(),
+                    return_addr: return_addr.clone(),
+                    function: function.clone(),
+                    module: module.clone(),
+                    offset,
+                    arity,
+                    variables: current_frame_args.clone(),
+                };
             }
         }
 
-
-        Ok(StackFrame {
-            address: frame_address,
-            return_addr,
-            function,
-            module,
-            offset,
-            arity,
-            variables: arguments,  // Use parsed variables
+        Ok(ProcStackInfo {
+            pid: section.id.clone().unwrap(),
+            frames: total_frames,
         })
     }
 }
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
+pub struct StackFrame {
+    pub variables: Vec<String>,
+    pub address: String, // Added: Address of the stack frame (the 0x... line)
+    pub return_addr: String,
+    pub function: String,
+    pub module: String, // Add module
+    pub offset: usize,  // Changed to usize
+    pub arity: usize,   // Changed to usize
+}
+
 #[derive(Debug)]
 pub struct SchedulerInfo {
     pub id: i32,

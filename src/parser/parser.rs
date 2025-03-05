@@ -21,6 +21,7 @@ use grep::{
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
@@ -209,11 +210,28 @@ impl CDParser {
     ) -> io::Result<String> {
         // seeks to the file using the byteoffsets in the dict and just retrives the raw data
         //println!("{:?}", filepath);
-        //println!("{:?}, {:#?}", id, crash_dump.processes_heap.get(id));
+        // println!("{:?}, {:#?}", id, crash_dump.processes_heap.get(id));
         if let Some(InfoOrIndex::Index(heap_index)) = crash_dump.processes_heap.get(id) {
-            let mut file = File::open(filepath.clone())?;
+            let mut file = OpenOptions::new().read(true).open(filepath)?;
 
             return crash_dump.load_proc_heap(heap_index, &mut file);
+        }
+        Ok("".to_string())
+    }
+
+    pub fn get_stack_info(
+        &self,
+        crash_dump: &CrashDump,
+        filepath: &String,
+        id: &str,
+    ) -> io::Result<String> {
+        // seeks to the file using the byteoffsets in the dict and just retrives the raw data
+        //println!("{:?}", filepath);
+        //println!("{:?}, {:#?}", id, crash_dump.processes_heap.get(id));
+        if let Some(InfoOrIndex::Index(stack_index)) = crash_dump.processes_stack.get(id) {
+            let mut file = OpenOptions::new().read(true).open(filepath)?;
+
+            return crash_dump.load_proc_stack(stack_index, &mut file);
         }
         Ok("".to_string())
     }
