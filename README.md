@@ -1,4 +1,6 @@
 # CLI for viewing Erlang Crash Dumps
+[![Rust](https://github.com/WhatsApp/crashdump_viewer_cli/actions/workflows/rust.yml/badge.svg)](https://github.com/WhatsApp/crashdump_viewer_cli/actions/workflows/rust.yml)
+
 View your crash dumps without wxwidgets.
 
 ## Examples
