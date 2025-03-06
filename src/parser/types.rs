@@ -14,15 +14,17 @@
 
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
+use rayon::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::PathBuf;
-use std::str::FromStr;
+use std::str::FromStr; // Import rayon traits
 
 pub const MAX_DEPTH_PARSE_DATATYPE: usize = 5;
+const CHUNK_SIZE: usize = 100; // You can adjust this value as needed
 
 pub const TAG_PREAMBLE: &str = "erl_crash_dump";
 pub const TAG_ABORT: &str = "abort";
@@ -407,6 +409,296 @@ impl CrashDump {
         let contents = String::from_utf8_lossy(&buffer);
         Ok(contents.to_string())
     }
+
+    // pub fn from_index_map_par(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
+    //     let mut file = File::open(file_path)?;
+
+    //     // 1. Serial Sections
+    //     let preamble = CrashDump::load_and_parse_preamble(index_map, &mut file)?;
+    //     let memory = CrashDump::load_and_parse_memory(index_map, &mut file)?;
+
+    //     // 2. Parallel Map Processing
+    //     let all_heap_addresses = CrashDump::process_all_heap_addresses(index_map, &mut file);
+    //     let processes_stack = CrashDump::process_processes_stack(index_map, &mut file)?;
+    //     let visited_binaries = CrashDump::process_visited_binaries(index_map, &mut file)?;
+    //     let processes_heap = CrashDump::process_processes_heap(index_map, &mut file)?;
+    //     let processes = CrashDump::process_processes(index_map, &mut file)?;
+
+    //     // Construct the final CrashDump
+    //     Ok(CrashDump {
+    //         preamble,
+    //         memory,
+    //         allocators: vec![], // Initialize other fields as needed
+    //         nodes: vec![],
+    //         processes,
+    //         processes_heap,
+    //         processes_stack,
+    //         ports: HashMap::new(),
+    //         schedulers: vec![],
+    //         ets: vec![],
+    //         timers: vec![],
+    //         atoms: vec![],
+    //         loaded_modules: vec![],
+    //         persistent_terms: vec![],
+    //         raw_sections: HashMap::new(),
+    //         group_info_map: HashMap::new(),
+    //         all_heap_addresses,
+    //         all_visited_heap_addresses: HashSet::new(),
+    //         visited_binaries,
+    //         visited_binaries_found: HashMap::new(),
+    //         visited_binaries_not_found: HashMap::new(),
+    //         all_off_heap_binaries: HashMap::new(),
+    //     })
+    // }
+
+    // fn load_and_parse_preamble(index_map: &IndexMap, file: &mut File) -> io::Result<Preamble> {
+    //     if let Some(IndexValue::Map(preamble_map)) = index_map.get(&Tag::Preamble) {
+    //         if let Some(index_row) = preamble_map.values().next() {
+    //             let contents = CrashDump::load_section(index_row, file)?;
+    //             if let Ok(DumpSection::Preamble(preamble)) = parse_section(&contents, None) {
+    //                 return Ok(preamble);
+    //             }
+    //         }
+    //     }
+    //     Err(io::Error::new(io::ErrorKind::Other, "Preamble not found or invalid"))
+    // }
+
+    // fn load_and_parse_memory(index_map: &IndexMap, file: &mut File) -> io::Result<MemoryInfo> {
+    //     if let Some(IndexValue::List(memory_list)) = index_map.get(&Tag::Memory) {
+    //         if let Some(index_row) = memory_list.first() {
+    //             let contents = CrashDump::load_section(index_row, file)?;
+    //             if let Ok(DumpSection::Memory(memory)) = parse_section(&contents, None) {
+    //                 return Ok(memory);
+    //             }
+    //         }
+    //     }
+    //     Err(io::Error::new(io::ErrorKind::Other, "Memory section not found or invalid"))
+    // }
+
+    // fn process_all_heap_addresses(index_map: &IndexMap, file: &mut File) -> HashMap<String, String> {
+    //     let keys: Vec<_> = index_map
+    //         .par_iter()
+    //         .filter(|(tag, _)| matches!(tag, Tag::ProcHeap | Tag::PersistentTerms | Tag::Literals))
+    //         .flat_map(|(_, index_value)| {
+    //             match index_value {
+    //                 IndexValue::Map(inner_map) => inner_map.keys().cloned().collect::<Vec<_>>(),
+    //                 IndexValue::List(_) => vec![],
+    //             }
+    //         })
+    //         .collect();
+
+    //     keys
+    //         .par_chunks(CHUNK_SIZE)
+    //         .fold(
+    //             || HashMap::new(),
+    //             |mut local_map, chunk| {
+    //                 for key in chunk {
+    //                     // 1. ProcHeap
+    //                     if let Some(index_row) = index_map.get(&Tag::ProcHeap).and_then(|v| v.as_map_mut()).and_then(|map| map.get(key)) {
+    //                         let contents = CrashDump::load_section(index_row, file).unwrap();
+    //                         if let Ok(DumpSection::Generic(generic_section)) = parse_section(&contents, Some(key)) {
+    //                             generic_section.raw_lines.into_iter().for_each(|line| {
+    //                                 let parts: Vec<&str> = line.splitn(2, ':').collect();
+    //                                 if parts.len() == 2 {
+    //                                     local_map.insert(parts[0].to_string(), parts[1].to_string());
+    //                                 } else {
+    //                                     eprintln!("Line does not contain expected delimiter: {}", line);
+    //                                 }
+    //                             });
+    //                         }
+    //                     }
+
+    //                     // 2. PersistentTerms
+    //                     if let Some(index_row) = index_map.get(&Tag::PersistentTerms).and_then(|v| v.as_list_mut()).and_then(|list| list.first()) {
+    //                         let contents = CrashDump::load_section(index_row, file).unwrap();
+    //                         if let Ok(DumpSection::Generic(generic_section)) = parse_section(&contents, Some(key)) {
+    //                             generic_section.raw_lines.into_iter().for_each(|line| {
+    //                                 let parts: Vec<&str> = line.splitn(2, '|').collect();
+    //                                 if parts.len() == 2 {
+    //                                     local_map.insert(parts[0].to_string(), parts[1].to_string());
+    //                                 } else {
+    //                                     eprintln!("Line does not contain expected delimiter: {}", line);
+    //                                 }
+    //                             });
+    //                         }
+    //                     }
+
+    //                     // 3. Literals
+    //                     if let Some(index_row) = index_map.get(&Tag::Literals).and_then(|v| v.as_list_mut()).and_then(|list| list.first()) {
+    //                         let contents = CrashDump::load_section(index_row, file).unwrap();
+    //                         if let Ok(DumpSection::Generic(generic_section)) = parse_section(&contents, Some(key)) {
+    //                             generic_section.raw_lines.into_iter().for_each(|line| {
+    //                                 let parts: Vec<&str> = line.splitn(2, ':').collect();
+    //                                 if parts.len() == 2 {
+    //                                     local_map.insert(parts[0].to_string(), parts[1].to_string());
+    //                                 } else {
+    //                                     eprintln!("Line does not contain expected delimiter: {}", line);
+    //                                 }
+    //                             });
+    //                         }
+    //                     }
+    //                 }
+    //                 local_map
+    //             },
+    //         )
+    //         .reduce(
+    //             || HashMap::new(),
+    //             |mut acc, local_map| {
+    //                 acc.extend(local_map);
+    //                 acc
+    //             },
+    //         )
+    // }
+
+    // fn process_processes_stack(index_map: &IndexMap, file: &mut File) -> io::Result<HashMap<String, InfoOrIndex<ProcStackInfo>>> {
+    //     index_map
+    //         .get(&Tag::ProcStack)
+    //         .and_then(|v| v.as_map_mut())
+    //         .map(|inner_map| {
+    //             let keys: Vec<_> = inner_map.keys().cloned().collect(); // Collect keys
+
+    //             keys
+    //                 .par_chunks(CHUNK_SIZE)
+    //                 .fold(
+    //                     || HashMap::new(),
+    //                     |mut local_map, chunk| {
+    //                         for key in chunk {
+    //                             if let Some(index_row) = inner_map.get(key) {
+    //                                 // Load the ProcStack section
+    //                                 let contents = CrashDump::load_section(index_row, file).unwrap();
+
+    //                                 // Parse and process the section
+    //                                 if let Ok(DumpSection::ProcStack(proc_stack)) = parse_section(&contents, Some(key)) {
+    //                                     local_map.insert(key.clone(), InfoOrIndex::Info(proc_stack));
+    //                                 }
+    //                             }
+    //                         }
+    //                         local_map
+    //                     },
+    //                 )
+    //                 .reduce(
+    //                     || HashMap::new(),
+    //                     |mut acc, local_map| {
+    //                         acc.extend(local_map);
+    //                         acc
+    //                     },
+    //                 )
+    //         })
+    //         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "ProcStack section not found"))
+    // }
+
+    // fn process_visited_binaries(index_map: &IndexMap, file: &mut File) -> io::Result<HashMap<String, usize>> {
+    //     index_map
+    //         .get(&Tag::Binary)
+    //         .and_then(|v| v.as_map_mut())
+    //         .map(|inner_map| {
+    //             let keys: Vec<_> = inner_map.keys().cloned().collect(); // Collect keys
+
+    //             keys
+    //                 .par_chunks(CHUNK_SIZE)
+    //                 .fold(
+    //                     || HashMap::new(),
+    //                     |mut local_map, chunk| {
+    //                         for key in chunk {
+    //                             if let Some(index_row) = inner_map.get(key) {
+    //                                 // No need to load the section, just process the index row
+    //                                 if let Some(binary_id) = &index_row.id {
+    //                                     let len = index_row.length.parse::<usize>().unwrap_or(0);
+    //                                     local_map.insert(binary_id.clone(), len);
+    //                                 }
+    //                             }
+    //                         }
+    //                         local_map
+    //                     },
+    //                 )
+    //                 .reduce(
+    //                     || HashMap::new(),
+    //                     |mut acc, local_map| {
+    //                         acc.extend(local_map);
+    //                         acc
+    //                     },
+    //                 )
+    //         })
+    //         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Binary section not found"))
+    // }
+
+    // fn process_processes_heap(index_map: &IndexMap, file: &mut File) -> io::Result<HashMap<String, InfoOrIndex<ProcHeapInfo>>> {
+    //     let chunk_size = 10; // Adjust as needed
+
+    //     index_map
+    //         .get(&Tag::ProcHeap)
+    //         .and_then(|v| v.as_map_mut())
+    //         .map(|inner_map| {
+    //             let keys: Vec<_> = inner_map.keys().cloned().collect(); // Collect keys
+
+    //             keys
+    //                 .par_chunks(CHUNK_SIZE)
+    //                 .fold(
+    //                     || HashMap::new(),
+    //                     |mut local_map, chunk| {
+    //                         for key in chunk {
+    //                             if let Some(index_row) = inner_map.get(key) {
+    //                                 // Load the ProcHeap section
+    //                                 let contents = CrashDump::load_section(index_row, file).unwrap();
+
+    //                                 // Parse and process the section (adapt parsing as needed)
+    //                                 if let Ok(DumpSection::Generic(generic_section)) = parse_section(&contents, Some(key)) {
+    //                                     // Assuming you have a function to convert GenericSection to ProcHeapInfo
+    //                                     let proc_heap_info = ProcHeapInfo::from_generic_section(&generic_section);
+    //                                     local_map.insert(key.clone(), InfoOrIndex::Info(proc_heap_info));
+    //                                 }
+    //                             }
+    //                         }
+    //                         local_map
+    //                     },
+    //                 )
+    //                 .reduce(
+    //                     || HashMap::new(),
+    //                     |mut acc, local_map| {
+    //                         acc.extend(local_map);
+    //                         acc
+    //                     },
+    //                 )
+    //         })
+    //         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "ProcHeap section not found"))
+    // }
+
+    // fn process_processes(index_map: &IndexMap, file: &mut File) -> io::Result<HashMap<String, InfoOrIndex<ProcInfo>>> {
+    //     index_map
+    //         .get(&Tag::Proc)
+    //         .and_then(|v| v.as_map_mut())
+    //         .map(|inner_map| {
+    //             let keys: Vec<_> = inner_map.keys().cloned().collect(); // Collect keys
+
+    //             keys
+    //                 .par_chunks(CHUNK_SIZE)
+    //                 .fold(
+    //                     || HashMap::new(),
+    //                     |mut local_map, chunk| {
+    //                         for key in chunk {
+    //                             if let Some(index_row) = inner_map.get(key) {
+    //                                 // Load the Proc section
+    //                                 let contents = CrashDump::load_section(index_row, file).unwrap();
+
+    //                                 // Parse and process the section
+    //                                 if let Ok(DumpSection::Proc(proc_info)) = parse_section(&contents, Some(key)) {
+    //                                     local_map.insert(key.clone(), InfoOrIndex::Info(proc_info));
+    //                                 }
+    //                             }
+    //                         }
+    //                         local_map
+    //                     },
+    //                 )
+    //                 .reduce(
+    //                     || HashMap::new(),
+    //                     |mut acc, local_map| {
+    //                         acc.extend(local_map);
+    //                         acc
+    //                     },
+    //                 )
+    //         })
+    //         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Proc section not found"))
+    // }
 
     pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
         let mut crash_dump = CrashDump::new();
