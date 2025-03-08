@@ -38,6 +38,7 @@ See the [CONTRIBUTING](CONTRIBUTING.md) file for how to help out.
 - [] - Cleanup unwraps()
 - [] - Split `app.rs` properly into `tui.rs`
 - [] - Refactor `Parser`
+- [] - Implement JSON mode 
 
 ## License
 Crash Dump Viewer CLI is Apache 2.0 licensed, as found in the LICENSE file.
