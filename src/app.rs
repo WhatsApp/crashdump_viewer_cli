@@ -20,7 +20,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{
         Block, Cell, HighlightSpacing, Paragraph, Row, StatefulWidget, Table, TableState, Tabs,
-        Widget,
+        Widget, Wrap,
     },
 };
 use rayon::prelude::*;
@@ -334,7 +334,7 @@ impl App<'_> {
         self.selected_tab = self.selected_tab.previous()
     }
 
-    pub fn get_heap_info(&self, pid: &str) -> io::Result<String> {
+    pub fn get_heap_info(&self, pid: &str) -> io::Result<Text> {
         self.parser
             .get_heap_info(&self.crash_dump, &self.filepath, pid)
     }
@@ -342,7 +342,11 @@ impl App<'_> {
     pub fn get_stack_info(&self, pid: &str) -> io::Result<Text> {
         self.parser
             .get_stack_info(&self.crash_dump, &self.filepath, pid)
-        // Ok("".to_string())
+    }
+
+    pub fn get_message_queue_info(&self, pid: &str) -> io::Result<Text> {
+        self.parser
+            .get_message_queue_info(&self.crash_dump, &self.filepath, pid)
     }
 }
 
@@ -515,15 +519,17 @@ impl SelectedTab {
         let selected_process = app.crash_dump.processes.get(selected_pid).unwrap();
 
         let process_info_text = match selected_process {
-            InfoOrIndex::Info(proc_info) => proc_info.format(),
+            InfoOrIndex::Info(proc_info) => proc_info.format_as_ratatui_text(),
             InfoOrIndex::Index(_) => unreachable!(),
         };
 
         let (inspect_info_title, inspect_info_text) = match app.process_view_state {
             ProcessViewState::Stack => ("Decoded Stack", app.get_stack_info(selected_pid).unwrap()),
-            _ => todo!(),
-            // ProcessViewState::Heap => ("Decoded Heap", app.get_heap_info(selected_pid).unwrap()),
-            // ProcessViewState::MessageQueue => ("Decoded Message Queue", "".to_string()),
+            ProcessViewState::Heap => ("Decoded Heap", app.get_heap_info(selected_pid).unwrap()),
+            ProcessViewState::MessageQueue => (
+                "Decoded Message Queue",
+                app.get_message_queue_info(selected_pid).unwrap(),
+            ),
         };
 
         //println!("heap info text: {}", heap_info_text);
@@ -531,6 +537,7 @@ impl SelectedTab {
         let detail_block = Paragraph::new(process_info_text)
             .block(Block::bordered().title("Process Details"))
             .style(Style::default().fg(Color::White))
+            .wrap(Wrap { trim: false })
             .alignment(Alignment::Left);
 
         let proc_heap = Paragraph::new(inspect_info_text)
@@ -551,7 +558,7 @@ impl SelectedTab {
         // split the second side into the info side
         let inner_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
+            .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(outer_layout[1]);
 
         let group_table_state = app
@@ -564,25 +571,54 @@ impl SelectedTab {
         let selected_process = app.crash_dump.processes.get(selected_pid);
 
         let process_info_text = match selected_process {
-            Some(InfoOrIndex::Info(proc_info)) => proc_info.format(),
-            _ => "No process info found".to_string(),
+            Some(InfoOrIndex::Info(proc_info)) => proc_info.format_as_ratatui_text(),
+            _ => Text::raw("No process info found".to_string()),
         };
 
-        let group_info_text = match app.ancestor_map.get(selected_pid) {
+        let children: Vec<Row> = match app.ancestor_map.get(selected_pid) {
             Some(children) => {
-                format!("{:#?}", children)
+                // for every child pid, look it up in the master dictionary and call .summary_ref_array on it
+                // and turn it into a row
+                children
+                    .into_iter()
+                    .map(|child_pid| {
+                        let child_info = app.crash_dump.processes.get(child_pid).unwrap();
+                        match child_info {
+                            InfoOrIndex::Info(proc_info) => Row::new(proc_info.summary_ref_array()),
+                            // if we don't find it, just print the pid
+                            InfoOrIndex::Index(_) => Row::new(vec![child_pid.clone()]),
+                        }
+                    })
+                    .collect()
             }
-            _ => "No group info found".to_string(),
+            _ => vec![Row::new(vec!["No data".to_string()])],
         };
 
-        let children_block = Paragraph::new(group_info_text)
-            .block(Block::bordered().title("Group Children"))
-            .style(Style::default().fg(Color::White))
-            .alignment(Alignment::Left);
+        // needs Pid, Name, Reductions, Memory, MsgQ Length,
+        let children_block = Table::new(
+            children,
+            [
+                Constraint::Length(15),
+                Constraint::Length(25),
+                Constraint::Length(25),
+                Constraint::Length(25),
+                Constraint::Length(25),
+            ],
+        )
+        .header(
+            ["Pid", "Name", "Reductions", "Memory", "MsgQ Length"]
+                .iter()
+                .map(|&h| Cell::from(h))
+                .collect::<Row>()
+                .style(Style::default().fg(Color::White).bg(Color::Green)),
+        )
+        .highlight_spacing(HighlightSpacing::Always)
+        .block(Block::bordered().title("Group Children"));
 
         let detail_block = Paragraph::new(process_info_text)
             .block(Block::bordered().title("Ancestor Details"))
             .style(Style::default().fg(Color::White))
+            .wrap(Wrap { trim: false })
             .alignment(Alignment::Left);
 
         Widget::render(&children_block, inner_layout[0], buf);

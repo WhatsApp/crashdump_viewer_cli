@@ -120,6 +120,7 @@ pub enum DumpSection {
     Proc(ProcInfo),
     // ProcHeap(ProcHeapInfo),
     ProcStack(ProcStackInfo),
+    ProcMessages(ProcMessagesInfo),
     // Scheduler(SchedulerInfo),
     // Ets(EtsInfo),
     // Timer(TimerInfo),
@@ -137,8 +138,7 @@ pub struct GenericSection {
     tag: String,
     id: Option<String>,
     data: HashMap<String, String>, // For key-value pairs
-    //   items: Vec<HashMap<String, String>>, // For lists of items
-    raw_lines: Vec<String>, // For raw lines without key-value pairs
+    raw_lines: Vec<String>,        // For raw lines without key-value pairs
 }
 
 // TODO: once the format is stablized we can implement this trait
@@ -163,7 +163,7 @@ impl FromStr for GenericSection {
         let id = header_parts.get(1).map(|s| s.trim().to_string());
 
         let mut data = HashMap::new();
-        //    let mut items = Vec::new();
+
         let mut raw_lines = Vec::new();
 
         if tag == TAG_PROC_STACK {
@@ -191,7 +191,6 @@ impl FromStr for GenericSection {
             tag,
             id,
             data,
-            //       items,
             raw_lines,
         })
     }
@@ -272,6 +271,10 @@ fn parse_section(s: &str, id: Option<&str>) -> Result<DumpSection, String> {
             DumpSection::ProcStack(ProcStackInfo::from_generic_section(&section).unwrap())
         }
 
+        Tag::ProcMessages => {
+            DumpSection::ProcMessages(ProcMessagesInfo::from_generic_section(&section).unwrap())
+        }
+
         _ => DumpSection::Generic(section),
     };
     Ok(section)
@@ -334,6 +337,7 @@ pub struct CrashDump {
     pub processes: HashMap<String, InfoOrIndex<ProcInfo>>,
     pub processes_heap: HashMap<String, InfoOrIndex<ProcHeapInfo>>,
     pub processes_stack: HashMap<String, InfoOrIndex<ProcStackInfo>>,
+    pub processes_messages: HashMap<String, InfoOrIndex<ProcMessagesInfo>>,
     pub ports: HashMap<String, InfoOrIndex<PortInfo>>,
     pub schedulers: Vec<InfoOrIndex<SchedulerInfo>>,
     pub ets: Vec<InfoOrIndex<EtsInfo>>,
@@ -379,6 +383,7 @@ impl CrashDump {
             processes: HashMap::new(),
             processes_heap: HashMap::new(),
             processes_stack: HashMap::new(),
+            processes_messages: HashMap::new(),
             ports: HashMap::new(),
             schedulers: vec![],
             ets: vec![],
@@ -765,6 +770,12 @@ impl CrashDump {
                                     .insert(id.clone(), InfoOrIndex::Index(index_row.clone()));
                             }
 
+                            Tag::ProcMessages => {
+                                crash_dump
+                                    .processes_messages
+                                    .insert(id.clone(), InfoOrIndex::Index(index_row.clone()));
+                            }
+
                             Tag::Binary => {
                                 // binaries are structured like `=binary:FFFF4D7B8C88`, we only need to know the size
                                 if let Some(binary_id) = &index_row.id {
@@ -853,46 +864,66 @@ impl CrashDump {
     // if it's a offheap binary, simply just print it out the length
     // something with multiple
 
-    pub fn load_proc_heap(&self, index_row: &IndexRow, file: &mut File) -> io::Result<String> {
+    pub fn load_proc_heap(&self, index_row: &IndexRow, file: &mut File) -> io::Result<Text> {
         let contents = Self::load_section(index_row, file)?;
-        //println!("contents: {}", contents);
-        let mut res = Vec::new();
+        let mut text = Text::default();
+
         match parse_section(&contents, index_row.id.as_deref()) {
             Ok(DumpSection::Generic(proc_heap)) => {
-                //      println!("proc_heap: {:?}", proc_heap.raw_lines);
                 proc_heap.raw_lines.into_iter().for_each(|line| {
                     let parts: Vec<&str> = line.splitn(2, ':').collect();
-                    //        println!("parts: {:?}", parts);
+
                     if parts.len() == 2 {
                         let addr = parts[0];
                         match self.parse_datatype(parts[1], 0) {
-                            Ok(parsed_res) => res.push(format!("{} - {}", addr, parsed_res)),
-                            Err(err) => res.push(format!("{} - Error: {}", addr, err)), // Handle error
+                            Ok(parsed_res) => {
+                                text.lines.push(Line::from(vec![
+                                    Span::styled(
+                                        format!("{}", addr),
+                                        Style::default().fg(Color::Yellow),
+                                    ),
+                                    Span::raw(" - "),
+                                    Span::styled(
+                                        format!("{}", parsed_res),
+                                        Style::default().fg(Color::Cyan),
+                                    ),
+                                ]));
+                            }
+                            Err(err) => {
+                                text.lines.push(Line::from(vec![
+                                    Span::styled(
+                                        format!("{}", addr),
+                                        Style::default().fg(Color::Yellow),
+                                    ),
+                                    Span::raw(" - "),
+                                    Span::styled(
+                                        format!("{}", err),
+                                        Style::default().fg(Color::Red),
+                                    ),
+                                ]));
+                            }
                         }
                     } else {
-                        res.push(line.to_string());
+                        text.lines.push(Line::from(vec![Span::raw(line)]));
                     }
                 });
             }
             Err(err) => {
-                // Return the error from parse_section
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     format!("Parse error: {}", err),
                 ));
             }
-            _ => {
-                // Handle other cases if necessary
-            }
+            _ => {}
         }
-        //println!("res: {}", res.join("\n"));
-        Ok(res.join("\n"))
+        Ok(text)
     }
 
     pub fn load_proc_stack(&self, index_row: &IndexRow, file: &mut File) -> io::Result<Text> {
         let contents = Self::load_section(index_row, file)?;
         let mut text = Text::default();
         let mut addr = String::new();
+
         if let Ok(DumpSection::ProcStack(proc_stack)) =
             parse_section(&contents, index_row.id.as_deref())
         {
@@ -929,6 +960,40 @@ impl CrashDump {
                     addr = frame.address.clone();
                 }
             });
+        }
+        Ok(text)
+    }
+
+    pub fn load_proc_message_queue(
+        &self,
+        index_row: &IndexRow,
+        file: &mut File,
+    ) -> io::Result<Text> {
+        let contents = Self::load_section(index_row, file)?;
+        let mut text = Text::default();
+        if let Ok(DumpSection::ProcMessages(proc_messages)) =
+            parse_section(&contents, index_row.id.as_deref())
+        {
+            proc_messages
+                .messages
+                .into_iter()
+                .for_each(|(message_addr, message_val)| {
+                    // set the ADDR to be Yellow and the Value to be Cyan
+                    // and try to parse each data type
+                    let message_addr = self.parse_datatype(&message_addr, 0).unwrap();
+                    let message_val = self.parse_datatype(&message_val, 0).unwrap();
+                    let line = Line::from(vec![
+                        Span::styled(message_addr, Style::default().fg(Color::Yellow)),
+                        Span::raw(" - "),
+                        Span::styled(message_val, Style::default().fg(Color::Cyan)),
+                    ]);
+                    text.lines.push(line);
+                });
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Parse error: {}", contents),
+            ));
         }
         Ok(text)
     }
@@ -1433,6 +1498,170 @@ pub struct ProcInfo {
 }
 
 impl ProcInfo {
+    pub fn format_as_ratatui_text(&self) -> Text {
+        // format as a ratatui text, composed of different lines. Each value should have a colorized key and values
+        // key should be yellow, value should be cyan
+        let mut text = Text::default();
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Pid: ", Style::default().fg(Color::Yellow)),
+            Span::styled(self.pid.clone(), Style::default().fg(Color::Cyan)),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("State: ", Style::default().fg(Color::Yellow)),
+            Span::styled(self.state.clone(), Style::default().fg(Color::Cyan)),
+        ]));
+
+        if let Some(name) = &self.name {
+            text.lines.push(Line::from(vec![
+                Span::styled("Name: ", Style::default().fg(Color::Yellow)),
+                Span::styled(name.clone(), Style::default().fg(Color::Cyan)),
+            ]));
+        }
+
+        if let Some(spawned_as) = &self.spawned_as {
+            text.lines.push(Line::from(vec![
+                Span::styled("Spawned As: ", Style::default().fg(Color::Yellow)),
+                Span::styled(spawned_as.clone(), Style::default().fg(Color::Cyan)),
+            ]));
+        }
+
+        if let Some(spawned_by) = &self.spawned_by {
+            text.lines.push(Line::from(vec![
+                Span::styled("Spawned By: ", Style::default().fg(Color::Yellow)),
+                Span::styled(spawned_by.clone(), Style::default().fg(Color::Cyan)),
+            ]));
+        }
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Message Queue Length: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{}", self.message_queue_length),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled(
+                "Number of Heap Fragments: ",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(
+                format!("{}", self.number_of_heap_fragments),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Heap Fragment Data: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{}", self.heap_fragment_data),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Reductions: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{}", self.reductions),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Stack Heap: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{}", self.stack_heap),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Old Heap: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{}", self.old_heap),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Heap Unused: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{}", self.heap_unused),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Old Heap Unused: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{}", self.old_heap_unused),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Bin Vheap: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{}", self.bin_vheap),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Old Bin Vheap: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{}", self.old_bin_vheap),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Bin Vheap Unused: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{}", self.bin_vheap_unused),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Old Bin Vheap Unused: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{}", self.old_bin_vheap_unused),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Memory: ", Style::default().fg(Color::Yellow)),
+            Span::styled(format!("{}", self.memory), Style::default().fg(Color::Cyan)),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Arity: ", Style::default().fg(Color::Yellow)),
+            Span::styled(format!("{}", self.arity), Style::default().fg(Color::Cyan)),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Program Counter: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{:?}", self.program_counter),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        text.lines.push(Line::from(vec![
+            Span::styled("Internal State: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{:?}", self.internal_state),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        text
+    }
+
     pub fn format(&self) -> String {
         format!(
             "Pid: {}\nState: {}\nName: {:#?}\nSpawned As: {:#?}\nSpawned By: {:#?}\nMessage Queue Length: {}\nNumber of Heap Fragments: {}\nHeap Fragment Data: {}\nLink List: {:#?}\nReductions: {}\nStack Heap: {}\nOld Heap: {}\nHeap Unused: {}\nOld Heap Unused: {}\nBin Vheap: {}\nOld Bin Vheap: {}\nBin Vheap
@@ -1470,10 +1699,18 @@ Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\n{:#?}\nInternal Sta
         ]
     }
 
+    pub fn summary_ref_array(&self) -> [String; 5] {
+        [
+            self.pid.clone(),
+            self.name.clone().unwrap_or_default(),
+            format!("{}", self.memory),
+            format!("{}", self.reductions),
+            format!("{}", self.message_queue_length),
+        ]
+    }
+
     pub fn from_generic_section(section: &GenericSection) -> Self {
-        // link_list might be optional or nonexistent
-        // any of these fields might be optional or nonexistent
-        let id = section.id.clone().unwrap_or_else(|| "".to_string());
+        let id = section.id.clone().unwrap_or_default();
         let raw_lines = &section.raw_lines;
         let data = &section.data;
 
@@ -1482,56 +1719,112 @@ Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\n{:#?}\nInternal Sta
             .map(|s| {
                 s.trim_matches(|c| c == '[' || c == ']')
                     .split(", ")
-                    .map(|s| s.to_string())
+                    .map(String::from)
                     .collect()
             })
             .unwrap_or_default();
 
         let internal_state: Vec<String> = data
             .get("Internal State")
-            .map(|s| s.split(" | ").map(|s| s.to_string()).collect())
+            .map(|s| s.split(" | ").map(String::from).collect())
             .unwrap_or_default();
 
         let program_counter: Option<ProgramCounter> = data
             .get("Program counter")
-            .map(|s| ProgramCounter::from_string(s))
-            .unwrap_or_default();
+            .and_then(|s| ProgramCounter::from_string(s));
+
+        let state = data.get("State").cloned().unwrap_or_default();
+        let name = data.get("Name").cloned().unwrap_or_default();
+        let spawned_as = data.get("Spawned as").cloned().filter(|s| !s.is_empty());
+        let spawned_by = data.get("Spawned by").cloned().filter(|s| !s.is_empty());
+
+        let message_queue_length = data
+            .get("Message queue length")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let number_of_heap_fragments = data
+            .get("Number of heap fragments")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let heap_fragment_data = data
+            .get("Heap fragment data")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let reductions = data
+            .get("Reductions")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let stack_heap = data
+            .get("Stack+heap")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let old_heap = data
+            .get("OldHeap")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let heap_unused = data
+            .get("Heap unused")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let old_heap_unused = data
+            .get("OldHeap unused")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let bin_vheap = data
+            .get("BinVHeap")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let old_bin_vheap = data
+            .get("OldBinVHeap")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let memory = data
+            .get("Memory")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let bin_vheap_unused = data
+            .get("BinVHeap unused")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let old_bin_vheap_unused = data
+            .get("OldBinVHeap unused")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+
+        let arity = raw_lines
+            .get(0)
+            .and_then(|line| line.split('=').last())
+            .map(|s| s.trim())
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
 
         let mut proc = ProcInfo {
             pid: id,
-            state: data["State"].clone(),
-            name: Some(
-                data.get("Name")
-                    .map(|s| s.clone())
-                    .unwrap_or("".to_string()),
-            ),
-
-            spawned_as: data.get("Spawned as").cloned().filter(|s| !s.is_empty()),
-            spawned_by: data.get("Spawned by").cloned().filter(|s| !s.is_empty()),
-
-            message_queue_length: data["Message queue length"].parse::<i64>().unwrap_or(0),
-            number_of_heap_fragments: data["Number of heap fragments"].parse().unwrap_or(0),
-            heap_fragment_data: data["Heap fragment data"].parse().unwrap_or(0),
-            link_list: link_list,
+            state,
+            name: Some(name),
+            spawned_as,
+            spawned_by,
+            message_queue_length,
+            number_of_heap_fragments,
+            heap_fragment_data,
+            link_list,
             program_counter: program_counter.unwrap_or_default(),
-            reductions: data["Reductions"].parse::<i64>().unwrap_or(0),
-            stack_heap: data["Stack+heap"].parse::<i64>().unwrap_or(0),
-            old_heap: data["OldHeap"].parse::<i64>().unwrap_or(0),
-            heap_unused: data["Heap unused"].parse::<i64>().unwrap_or(0),
-            old_heap_unused: data["OldHeap unused"].parse::<i64>().unwrap_or(0),
-            bin_vheap: data["BinVHeap"].parse::<i64>().unwrap_or(0),
-            old_bin_vheap: data["OldBinVHeap"].parse::<i64>().unwrap_or(0),
-            memory: data["Memory"].parse::<i64>().unwrap_or(0),
-            bin_vheap_unused: data["BinVHeap unused"].parse::<i64>().unwrap_or(0),
-            old_bin_vheap_unused: data["OldBinVHeap unused"].parse::<i64>().unwrap_or(0),
+            reductions,
+            stack_heap,
+            old_heap,
+            heap_unused,
+            old_heap_unused,
+            bin_vheap,
+            old_bin_vheap,
+            memory,
+            bin_vheap_unused,
+            old_bin_vheap_unused,
             total_bin_vheap: 0,
-            //arity: raw_lines[0].split("=").last().unwrap().parse::<i64>().unwrap(),
-            arity: 0,
-            internal_state: internal_state,
+            arity,
+            internal_state,
         };
 
         proc.total_bin_vheap = proc.bin_vheap + proc.old_bin_vheap;
-
         proc
     }
 }
@@ -1768,6 +2061,33 @@ impl ProcStackInfo {
         Ok(ProcStackInfo {
             pid: section.id.clone().unwrap(),
             frames: total_frames,
+        })
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
+pub struct ProcMessagesInfo {
+    pub pid: String,
+    pub messages: HashMap<String, String>,
+}
+
+// ProcMessages are arranged with <ADDR>:<VALUE> format, we can just parse .data
+impl ProcMessagesInfo {
+    fn from_generic_section(section: &GenericSection) -> Result<Self, String> {
+        if section.tag != TAG_PROC_MESSAGES {
+            return Err("Not a proc_messages section".to_string());
+        }
+        let mut messages = HashMap::new();
+        section.raw_lines.iter().for_each(|line| {
+            let parts: Vec<&str> = line.splitn(2, ":").collect();
+            if parts.len() == 2 {
+                messages.insert(parts[0].to_string(), parts[1].to_string());
+            }
+        });
+
+        Ok(ProcMessagesInfo {
+            pid: section.id.clone().unwrap(),
+            messages,
         })
     }
 }

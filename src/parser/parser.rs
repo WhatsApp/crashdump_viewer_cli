@@ -204,12 +204,12 @@ impl CDParser {
         crash_dump
     }
 
-    pub fn get_heap_info(
+    pub fn get_heap_info<'a>(
         &self,
-        crash_dump: &CrashDump,
+        crash_dump: &'a CrashDump,
         filepath: &String,
         id: &str,
-    ) -> io::Result<String> {
+    ) -> io::Result<Text<'a>> {
         // seeks to the file using the byteoffsets in the dict and just retrives the raw data
         //println!("{:?}", filepath);
         // println!("{:?}, {:#?}", id, crash_dump.processes_heap.get(id));
@@ -218,7 +218,7 @@ impl CDParser {
 
             return crash_dump.load_proc_heap(heap_index, &mut file);
         }
-        Ok("".to_string())
+        Ok(Text::from(""))
     }
 
     pub fn get_stack_info<'a>(
@@ -227,14 +227,26 @@ impl CDParser {
         filepath: &String,
         id: &str,
     ) -> io::Result<Text<'a>> {
-        // seeks to the file using the byteoffsets in the dict and just retrives the raw data
-        //println!("{:?}", filepath);
-        //println!("{:?}, {:#?}", id, crash_dump.processes_heap.get(id));
         if let Some(InfoOrIndex::Index(stack_index)) = crash_dump.processes_stack.get(id) {
             let mut file = OpenOptions::new().read(true).open(filepath)?;
 
             return crash_dump.load_proc_stack(stack_index, &mut file);
         }
+        Ok(Text::from(""))
+    }
+
+    pub fn get_message_queue_info<'a>(
+        &self,
+        crash_dump: &'a CrashDump,
+        filepath: &String,
+        id: &str,
+    ) -> io::Result<Text<'a>> {
+        if let Some(InfoOrIndex::Index(mq_index)) = crash_dump.processes_messages.get(id) {
+            let mut file = OpenOptions::new().read(true).open(filepath)?;
+
+            return crash_dump.load_proc_message_queue(mq_index, &mut file);
+        }
+
         Ok(Text::from(""))
     }
 
