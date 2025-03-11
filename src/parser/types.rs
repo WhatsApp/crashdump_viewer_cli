@@ -12,6 +12,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+///////////////////////////////////////////////////////////////////////////////////////////////////
+//
+// This file contains the type definitions and parsing logic for the crash dumps.
+//
+// The general idea is that we have a two-phase parsing approach:
+//
+// 1. Index Creation:
+//    - We scan the crash dump file for section headers (e.g., `=proc:1`).
+//    - We record the byte offset and length of each section in an `IndexMap`.
+//
+// 2. Detailed Crash Dump Creation:
+//    - We use the `IndexMap` to locate and parse individual sections.
+//    - We use the `InfoOrIndex<T>` type to represent either the parsed information (`Info`) or
+//      just the index (`Index`) for a section.
+//    - The `from_index_map` function controls whether the parsing is eager or lazy.
+//      - If eager, we parse the section immediately and store the `Info`.
+//      - If lazy, we store the `Index` and defer parsing until later.
+//
+// The `parse_section` function defines how a particular section is parsed.
+//
+// The `from_index_map` function determines when a section is parsed.
+//
+// This approach allows us to:
+// - Avoid loading the entire crash dump into memory at once.
+// - Defer parsing of sections until they are actually needed.
+// - Support both eager and lazy parsing strategies.
+//
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use rayon::prelude::*;
@@ -70,48 +99,87 @@ pub const TAG_END: &str = "end";
 // Section tags - lifted from https://github.com/erlang/otp/blob/master/lib/observer/src/crashdump_viewer.erl#L121
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
 pub enum Tag {
+    // Preamble of the crash dump.
     Preamble,
+    // Abort information.
     Abort,
+    // Allocated memory areas.
     AllocatedAreas,
+    // Memory allocator information.
     Allocator,
+    // Atom table.
     Atoms,
+    // Binary data.
     Binary,
+    // Dirty CPU scheduler information.
     DirtyCpuScheduler,
+    // Dirty CPU run queue information.
     DirtyCpuRunQueue,
+    // Dirty IO scheduler information.
     DirtyIoScheduler,
+    // Dirty IO run queue information.
     DirtyIoRunQueue,
+    // End of a section.
     Ende,
+    // Erlang crash dump header.
     ErlCrashDump,
+    // ETS table information.
     Ets,
+    // Fun information.
     Fun,
+    // Hash table information.
     HashTable,
+    // Hidden node information.
     HiddenNode,
+    // Index table information.
     IndexTable,
+    // Instrumentation data.
     InstrData,
+    // Internal ETS table information.
     InternalEts,
+    // Literal values.
     Literals,
+    // Loaded modules information.
     LoadedModules,
+    // Memory usage information.
     Memory,
+    // Memory map information.
     MemoryMap,
+    // Memory status information.
     MemoryStatus,
+    // Module information.
     Mod,
+    // No distribution information.
     NoDistribution,
+    // Node information.
     Node,
+    // Not connected information.
     NotConnected,
+    // Old instrumentation data.
     OldInstrData,
+    // Persistent terms information.
     PersistentTerms,
+    // Port information.
     Port,
+    // Process information.
     Proc,
+    // Process dictionary information.
     ProcDictionary,
+    // Process heap information.
     ProcHeap,
+    // Process messages information.
     ProcMessages,
+    // Process stack information.
     ProcStack,
+    // Scheduler information.
     Scheduler,
+    // Timer information.
     Timer,
+    // Visible node information.
     VisibleNode,
+    // End of a section.
     End,
 }
-
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub enum DumpSection {
     Preamble(Preamble),
@@ -133,9 +201,15 @@ pub enum DumpSection {
     Generic(GenericSection),
 }
 
+/// Generic section that can represent any section in the crash dump.
+///
+/// This is used as an intermediate representation (IR) before we parse the section into a
+/// more specific type.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct GenericSection {
+    /// Tag of the section (e.g., `proc`, `proc_stack`, etc.).
     tag: String,
+    /// Optional identifier for the section (e.g., process ID, binary ID, etc.).
     id: Option<String>,
     data: HashMap<String, String>, // For key-value pairs
     raw_lines: Vec<String>,        // For raw lines without key-value pairs
@@ -345,6 +419,10 @@ pub struct CrashDump {
     pub atoms: Vec<InfoOrIndex<String>>,
     pub loaded_modules: Vec<InfoOrIndex<LoadedModules>>,
     pub persistent_terms: Vec<InfoOrIndex<PersistentTermInfo>>,
+    /// Raw sections that have not yet been parsed.
+    ///
+    /// This is used to store sections that we don't know how to parse yet, or sections that
+    /// we want to defer parsing until later.
     pub raw_sections: HashMap<String, Vec<u8>>,
     pub group_info_map: HashMap<String, GroupInfo>,
 
@@ -705,6 +783,13 @@ impl CrashDump {
     //         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Proc section not found"))
     // }
 
+    /// Creates a new `CrashDump` from an `IndexMap`.
+    ///
+    /// This function controls whether the parsing is eager or lazy.
+    ///
+    /// If eager, we parse the section immediately and store the `Info`.
+    ///
+    /// If lazy, we store the `Index` and defer parsing until later.
     pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
         let mut crash_dump = CrashDump::new();
         let mut file = File::open(file_path)?;
@@ -998,32 +1083,61 @@ impl CrashDump {
         Ok(text)
     }
 
+    // Parses a data type string from a crash dump.
+    //
+    // This function recursively parses the input string `data` to interpret the encoded data type.
+    // It uses the first character of the string to determine the type and then dispatches to a
+    // specific helper function.
+    //
+    // The `depth` parameter is used to track the recursion depth and prevent infinite loops.
+    //
+    // # Arguments
+    //
+    // * `data` - The input string containing the encoded data type.
+    // * `depth` - The current recursion depth.
+    //
+    // # Returns
+    //
+    // A `Result` containing either a `String` representation of the parsed data type or a `String`
+    // describing the error encountered.
+    //
+    // # Examples
+    //
+    // ```
+    // // Parse an integer:
+    // let result = parse_datatype("I123", 0);
+    // assert_eq!(result, Ok("123".to_string()));
+    //
+    // // Parse a tuple:
+    // let result = parse_datatype("t2:I1,I2", 0);
+    // assert_eq!(result, Ok("{1, 2}".to_string()));
+    // ```
     fn parse_datatype(&self, data: &str, depth: usize) -> Result<String, String> {
         if depth > MAX_DEPTH_PARSE_DATATYPE {
             return Ok(format!("(*{})", data));
         }
 
         let depth = depth + 1;
+        // Match the first character of the data string to determine the data type.
         match data.chars().next() {
-            Some('t') => self.parse_tuple(data, depth),
-            Some('A') => Ok(self.parse_atom(data)),
-            Some('I') => self.parse_int(data).map(|i| i.to_string()),
-            Some('N') => Ok("[]".to_string()),
-            Some('l') => self.parse_list(data, depth),
-            Some('H') => self.parse_heap(data, depth),
-            Some('E') => self.parse_encoded_term(data),
-            Some('B') => self.parse_bignum(data),
-            Some('F') => self.parse_float(data),
-            Some('P') | Some('p') => self.parse_pid(data),
-            Some('Y') => self.parse_binary(data),
-            Some('M') => Ok(format!("M: {}", data)),
-            // Some('M') => self.parse_map(data, depth), // TODO: FIX MAP PARSING, IT'S BROKEN
-            Some('R') => self.parse_funref(data),
-            Some('S') => Ok(self.parse_string(data)),
+            Some('t') => self.parse_tuple(data, depth), // Tuple
+            Some('A') => Ok(self.parse_atom(data)),     // Atom
+            Some('I') => self.parse_int(data).map(|i| i.to_string()), // Integer
+            Some('N') => Ok("".to_string()),            // Empty list
+            Some('l') => self.parse_list(data, depth),  // List
+            Some('H') => self.parse_heap(data, depth),  // Heap reference
+            Some('E') => self.parse_encoded_term(data), // Encoded term
+            Some('B') => self.parse_bignum(data),       // Bignum
+            Some('F') => self.parse_float(data),        // Float
+            Some('P') | Some('p') => self.parse_pid(data), // Pid or port
+            Some('Y') => self.parse_binary(data),       // Binary
+            Some('M') => Ok(format!("M: {}", data)),    // Map (currently returns raw data)
+            Some('R') => self.parse_funref(data),       // Fun reference
+            Some('S') => Ok(self.parse_string(data)),   // String
             _ => Ok(format!(
                 "---don't know how to parse {} at depth {}---",
                 data, depth
-            )),
+            )), // Unknown data type
         }
     }
 
@@ -1046,6 +1160,27 @@ impl CrashDump {
         }
     }
 
+    // Parses a tuple data type string.
+    //
+    // This function extracts the tuple size from the input string and then recursively parses the
+    // individual elements of the tuple.
+    //
+    // # Arguments
+    //
+    // * `data` - The input string containing the encoded tuple.
+    // * `depth` - The current recursion depth.
+    //
+    // # Returns
+    //
+    // A `Result` containing either a `String` representation of the parsed tuple or a `String`
+    // describing the error encountered.
+    //
+    // # Examples
+    //
+    // ```
+    // let result = parse_tuple("t2:I1,I2", 1);
+    // assert_eq!(result, Ok("{1, 2}".to_string()));
+    // ```
     fn parse_tuple(&self, data: &str, depth: usize) -> Result<String, String> {
         let mut chars = data.chars();
         chars.next(); // Consume 't'
@@ -1081,6 +1216,26 @@ impl CrashDump {
         int_str.parse::<i64>().map_err(|e| e.to_string())
     }
 
+    // Parses a list data type string.
+    //
+    // This function recursively parses the individual elements of the list.
+    //
+    // # Arguments
+    //
+    // * `data` - The input string containing the encoded list.
+    // * `depth` - The current recursion depth.
+    //
+    // # Returns
+    //
+    // A `Result` containing either a `String` representation of the parsed list or a `String`
+    // describing the error encountered.
+    //
+    // # Examples
+    //
+    // ```
+    // let result = parse_list("lHFFFF454383C8|HFFFF45438460|N", 1);
+    // assert_eq!(result, Ok("[{1, 2}, {3, 4}]".to_string()));
+    // ```
     fn parse_list(&self, data: &str, depth: usize) -> Result<String, String> {
         let parts = data[1..].split('|'); // Remove 'l' and split by '|'
         let parsed: Result<Vec<String>, String> =
@@ -1090,6 +1245,28 @@ impl CrashDump {
         Ok(format!("[{}]", parsed.join(", ")))
     }
 
+    // Parses a heap reference data type string.
+    //
+    // This function looks up the heap address in the `all_heap_addresses` map and recursively parses
+    // the corresponding data. If the address is not found, it returns a string indicating an
+    // unresolved heap reference.
+    //
+    // # Arguments
+    //
+    // * `data` - The input string containing the encoded heap reference.
+    // * `depth` - The current recursion depth.
+    //
+    // # Returns
+    //
+    // A `Result` containing either a `String` representation of the parsed heap data or a `String`
+    // describing the error encountered.
+    //
+    // # Examples
+    //
+    // ```
+    // let result = parse_heap("HFFFF454383C8", 1);
+    // assert_eq!(result, Ok("{1, 2}".to_string()));
+    // ```
     fn parse_heap(&self, data: &str, depth: usize) -> Result<String, String> {
         let addr = &data[1..]; // Remove 'H'
         if self.all_heap_addresses.contains_key(addr) {
@@ -1470,30 +1647,53 @@ pub struct Atom {
     pub used: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct ProcInfo {
+    // The process identifier (PID).
     pub pid: String,
+    // The current state of the process (e.g., "running", "waiting").
     pub state: String,
+    // The registered name of the process (if any).
     pub name: Option<String>,
+    // The initial name of the process when it was spawned.
     pub spawned_as: Option<String>,
+    // The PID of the parent process that spawned this process.
     pub spawned_by: Option<String>,
+    // The number of messages in the process's message queue.
     pub message_queue_length: i64,
+    // The number of heap fragments used by the process.
     pub number_of_heap_fragments: i64,
+    // The total size of heap fragment data used by the process (in bytes).
     pub heap_fragment_data: i64,
+    // A list of PIDs representing processes linked to this process.
     pub link_list: Vec<String>,
+    // The number of reductions performed by the process.
     pub reductions: i64,
+    // The combined size of the stack and heap memory used by the process (in bytes).
     pub stack_heap: i64,
+    // The size of the old heap memory used by the process (in bytes).
     pub old_heap: i64,
+    // The amount of unused heap memory allocated to the process (in bytes).
     pub heap_unused: i64,
+    // The amount of unused old heap memory allocated to the process (in bytes).
     pub old_heap_unused: i64,
+    // The size of the binary virtual heap used by the process (in bytes).
     pub bin_vheap: i64,
+    // The size of the old binary virtual heap used by the process (in bytes).
     pub old_bin_vheap: i64,
+    // The amount of unused binary virtual heap memory allocated to the process (in bytes).
     pub bin_vheap_unused: i64,
+    // The amount of unused old binary virtual heap memory allocated to the process (in bytes).
     pub old_bin_vheap_unused: i64,
+    // The total size of the binary virtual heap used by the process (in bytes), including both current and old.
     pub total_bin_vheap: i64,
+    // The total memory used by the process (in bytes).
     pub memory: i64,
+    // The arity of the current function being executed by the process.
     pub arity: i64,
+    // Information about the current program counter of the process.
     pub program_counter: ProgramCounter,
+    // A list of strings representing the internal state of the process.
     pub internal_state: Vec<String>,
 }
 
@@ -1904,66 +2104,17 @@ pub struct Value {
     pub atom: Option<String>,
     pub heap_ref: Option<String>,
 }
+// Enum representing the type of a value in a heap entry.
 #[derive(Debug)]
 pub enum ValueType {
+    // Integer value.
     IntegerValue,
+    // Atom value.
     AtomValue,
+    // Heap reference value.
     HeapRefValue,
+    // Process identifier (PID) value.
     PidValue,
-}
-
-// the following structs are not strictly parsed yet, although support for them is ongoing
-#[derive(Debug)]
-pub struct AllocatorInfo {
-    pub name: String,
-    pub version: String,
-    pub options: HashMap<String, String>,
-    pub mbcs_blocks: HashMap<String, BlockInfo>,
-    pub mbcs_carriers: MBCSCarriers,
-    pub sbcs_blocks: HashMap<String, BlockInfo>,
-    pub sbcs_carriers: SBCSCarriers,
-    pub calls: Calls,
-}
-#[derive(Debug)]
-pub struct MBCSCarriers {
-    pub count: i64,
-    pub mseg_count: i64,
-    pub sys_alloc_count: i64,
-    pub size: [i64; 3],
-    pub mseg_size: i64,
-    pub sys_alloc_size: i64,
-}
-#[derive(Debug)]
-pub struct SBCSCarriers {
-    pub count: i64,
-    pub mseg_count: i64,
-    pub sys_alloc_count: i64,
-    pub size: [i64; 3],
-    pub mseg_size: i64,
-    pub sys_alloc_size: i64,
-}
-#[derive(Debug)]
-pub struct Calls {
-    pub alloc: i64,
-    pub free: i64,
-    pub realloc: i64,
-    pub mseg_alloc: i64,
-    pub mseg_dealloc: i64,
-    pub mseg_realloc: i64,
-    pub sys_alloc: i64,
-    pub sys_free: i64,
-    pub sys_realloc: i64,
-}
-#[derive(Debug)]
-pub struct BlockInfo {
-    pub count: [i64; 3],
-    pub size: [i64; 3],
-}
-#[derive(Debug)]
-pub struct NodeInfo {
-    pub name: String,
-    pub type_: String,
-    pub status: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
@@ -2094,13 +2245,82 @@ impl ProcMessagesInfo {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
 pub struct StackFrame {
+    // The values of the variables in the current stack frame.
     pub variables: Vec<String>,
-    pub address: String, // Added: Address of the stack frame (the 0x... line)
+    // The address of the stack frame (the 0x... line).
+    pub address: String,
+    // The return address of the stack frame.
     pub return_addr: String,
+    // The name of the function being executed in the stack frame.
     pub function: String,
-    pub module: String, // Add module
-    pub offset: usize,  // Changed to usize
-    pub arity: usize,   // Changed to usize
+    // The name of the module containing the function.
+    pub module: String,
+    // The offset within the function.
+    pub offset: usize,
+    // The arity of the function.
+    pub arity: usize,
+}
+
+// the following structs are not strictly parsed yet, although support for them is ongoing
+
+// Allocator information (currently unimplemented).
+//
+// This struct will eventually hold information about the memory allocator used by the Erlang VM.
+#[derive(Debug)]
+pub struct AllocatorInfo {
+    pub name: String,
+    pub version: String,
+    pub options: HashMap<String, String>,
+    pub mbcs_blocks: HashMap<String, BlockInfo>,
+    pub mbcs_carriers: MBCSCarriers,
+    pub sbcs_blocks: HashMap<String, BlockInfo>,
+    pub sbcs_carriers: SBCSCarriers,
+    pub calls: Calls,
+}
+#[derive(Debug)]
+pub struct MBCSCarriers {
+    pub count: i64,
+    pub mseg_count: i64,
+    pub sys_alloc_count: i64,
+    pub size: [i64; 3],
+    pub mseg_size: i64,
+    pub sys_alloc_size: i64,
+}
+#[derive(Debug)]
+pub struct SBCSCarriers {
+    pub count: i64,
+    pub mseg_count: i64,
+    pub sys_alloc_count: i64,
+    pub size: [i64; 3],
+    pub mseg_size: i64,
+    pub sys_alloc_size: i64,
+}
+#[derive(Debug)]
+pub struct Calls {
+    pub alloc: i64,
+    pub free: i64,
+    pub realloc: i64,
+    pub mseg_alloc: i64,
+    pub mseg_dealloc: i64,
+    pub mseg_realloc: i64,
+    pub sys_alloc: i64,
+    pub sys_free: i64,
+    pub sys_realloc: i64,
+}
+#[derive(Debug)]
+pub struct BlockInfo {
+    pub count: [i64; 3],
+    pub size: [i64; 3],
+}
+
+// Node information (currently unimplemented).
+//
+// This struct will eventually hold information about the Erlang node involved in the crash.
+#[derive(Debug)]
+pub struct NodeInfo {
+    pub name: String,
+    pub type_: String,
+    pub status: String,
 }
 
 #[derive(Debug)]

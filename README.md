@@ -39,10 +39,14 @@ See the [CONTRIBUTING](CONTRIBUTING.md) file for how to help out.
 - [x] - Viewing individual information for a process
 
 ## TODOs
-- [ ] - Implement Help Page (when you press `?`, should come up with a list of commands)
+### High Priority
 - [ ] - Parallelize `CrashDump::from_index_map`
-- [ ] - Implement additional information (when you press enter, we should be able to go into the children table)
+- [ ] - Add TextView to inspect all output on Stack/Heap/Messages
+    - [ ] - Implement additional information (when you press enter, we should be able to go into the children table)
 - [ ] - Human readable byte sizes (should be in bytes instead of words)
+
+### Future Work
+- [ ] - Implement Help Page (when you press `?`, should come up with a list of commands)
 - [ ] - Better coloring that just static coloring (we're currently hardcoding a lot of colors, but these should ideally be moved out)
 - [ ] - Implement custom sorting for tables 
 - [ ] - Implement a regex search for processes (current right now you can't search, only scroll down)

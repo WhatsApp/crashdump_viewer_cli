@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! This module provides the `CDParser` struct, which is responsible for parsing crash dump files.
+//! The parser uses a combination of regex matching and byte offset indexing to efficiently extract
+//! information from the crash dump.
+
 use crate::parser::*;
 use grep::{
     regex::RegexMatcher,
@@ -80,6 +84,15 @@ pub struct CDParser {
 }
 
 impl CDParser {
+    /// Creates a new `CDParser` instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `filepath` - The path to the crash dump file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened or the path is invalid.
     pub fn new(filepath: &str) -> Result<Self, io::Error> {
         let (filepath, filename) = Self::split_path_and_filename(filepath)?;
         let realpath = filepath.join(&filename);
@@ -95,14 +108,16 @@ impl CDParser {
         })
     }
 
-    // really the parse needs to call the grep crate, which then does a simple regex match
-    // the implementation is that we just need to search for the offsets
-    // create the regex that searches for =<section>:<label>
-    // then get all the byte offsets, from the length to each one
-    // using that, map into chunks, and deserialize into the types.rs structs
-    // at the end there will be a big struct that contains all the sections
-    // enrich as needed
-
+    /// Builds an index of the crash dump file.
+    /// The index maps section tags (e.g., `=proc:<0.1.0>`, `=HEAP_INFO:<0.1.0>`) to their corresponding byte offsets and lengths
+    /// within the file. This allows for efficient retrieval of specific sections later.
+    ///
+    /// The index is built by searching the file for lines starting with "=" using a regex.
+    /// Each match is parsed to extract the tag and optional ID, which are then used to populate the `IndexMap`.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing the `IndexMap` if successful, or an `io::Error` if an error occurred during file processing.
     pub fn build_index(&self) -> Result<IndexMap, io::Error> {
         let matcher = RegexMatcher::new(r"^=.*").unwrap();
         let mut searcher = SearcherBuilder::new()
@@ -250,6 +265,18 @@ impl CDParser {
         Ok(Text::from(""))
     }
 
+    /// Calculates the group information for each process in the ancestor map.
+    ///
+    /// The group information includes the total heap size, binary size, and memory size for each process and its children.
+    ///
+    /// # Arguments
+    ///
+    /// * `ancestor_map` - A map of process IDs to their children.
+    /// * `processes` - A map of process IDs to their `ProcInfo`.
+    ///
+    /// # Returns
+    ///
+    /// Returns a map of process IDs to their `GroupInfo`.
     pub fn calculate_group_info(
         ancestor_map: &HashMap<String, Vec<String>>,
         processes: &HashMap<String, InfoOrIndex<ProcInfo>>,
@@ -288,6 +315,17 @@ impl CDParser {
         group_info_map
     }
 
+    /// Creates a table of descendants for each process in the crash dump.
+    ///
+    /// The table maps each process ID to a vector of its descendants.
+    ///
+    /// # Arguments
+    ///
+    /// * `all_processes_info` - A map of all process IDs to their `ProcInfo`.
+    ///
+    /// # Returns
+    ///
+    /// Returns a map of process IDs to their descendants.
     pub fn create_descendants_table(
         all_processes_info: &HashMap<String, InfoOrIndex<ProcInfo>>,
     ) -> HashMap<String, Vec<String>> {
