@@ -49,7 +49,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::os::unix::prelude::FileExt;
 use std::path::PathBuf;
+use crossbeam::channel;
+use std::sync::Arc;
+use std::thread;
 use std::str::FromStr; // Import rayon traits
 
 pub const MAX_DEPTH_PARSE_DATATYPE: usize = 5;
@@ -480,14 +484,18 @@ impl CrashDump {
         }
     }
 
-    pub fn load_section(index_row: &IndexRow, file: &mut File) -> io::Result<String> {
+    pub fn load_section(index_row: &IndexRow, file: &File) -> io::Result<String> {
         let start_offset: u64 = index_row.start.parse().unwrap_or(0);
         let length: u64 = index_row.length.parse().unwrap_or(0);
 
-        file.seek(SeekFrom::Start(start_offset))?;
-
         let mut buffer = vec![0; length as usize];
-        file.read_exact(&mut buffer)?;
+        
+        // file.seek(SeekFrom::Start(start_offset))?;
+
+        
+        // file.read_exact(&mut buffer)?;
+
+        file.read_exact_at(&mut buffer, start_offset)?;
 
         let contents = String::from_utf8_lossy(&buffer);
         Ok(contents.to_string())
@@ -792,16 +800,58 @@ impl CrashDump {
     /// If lazy, we store the `Index` and defer parsing until later.
     pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
         let mut crash_dump = CrashDump::new();
-        let mut file = File::open(file_path)?;
+        let file = File::open(file_path)?;
+        let file = Arc::new(file);
+
         // let mut child_map: HashMap<String, Vec<String>> = HashMap::new();
 
+        let (tx, rx) = channel::unbounded();
+        let num_consumers = 20;
+        let mut handles = Vec::new();
+
+        // TODO: fixthis with sharded dashmap
+        for _ in 0..num_consumers {
+            let rx = rx.clone();
+            let file = Arc::clone(&file);
+            let handle = thread::spawn(move || {
+                while let Ok((tag, id, index_row)) = rx.recv() {
+                    match tag {
+                        Tag::Proc => {
+                            let contents = Self::load_section(&index_row, &file).unwrap();
+                            if let Ok(DumpSection::Proc(proc)) = parse_section(&contents, Some(&id)) {
+                                // dashmap insert
+                            }
+                        }
+                        Tag::ProcHeap => {
+                            let contents = Self::load_section(&index_row, &file).unwrap();
+                            if let Ok(DumpSection::Generic(proc_heap)) = parse_section(&contents, Some(&id)) {
+                                // dashmap insert
+                                proc_heap.raw_lines.into_iter().for_each(|line| {
+                                    let parts: Vec<&str> = line.splitn(2, ':').collect();
+                                    if parts.len() == 2 {
+                                        addrs.insert(parts[0].to_string(), parts[1].to_string());
+                                    } else {
+                                        eprintln!("Line does not contain expected delimiter: {}", line);
+                                    }
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+        
+        // proc, proc heap, literals, persistent terms are probably the slowest to be read
+        // proc stack and proc messages we're just cloning some ids, not huge
         for (tag, index_value) in index_map {
             match index_value {
                 IndexValue::Map(inner_map) => {
                     for (id, index_row) in inner_map {
                         match tag {
                             Tag::Preamble => {
-                                let contents = Self::load_section(&index_row, &mut file)?;
+                                let contents = Self::load_section(&index_row, &file)?;
                                 if let Ok(DumpSection::Preamble(preamble)) =
                                     parse_section(&contents, Some(&id))
                                 {
@@ -810,14 +860,10 @@ impl CrashDump {
                             }
 
                             Tag::Proc => {
-                                let contents = Self::load_section(&index_row, &mut file)?;
-                                if let Ok(DumpSection::Proc(proc)) =
-                                    parse_section(&contents, Some(&id))
-                                {
-                                    crash_dump
-                                        .processes
-                                        .insert(id.clone(), InfoOrIndex::Info(proc));
-                                }
+                                // send the index row and file ref to the processor channel, and then parse it
+                                // when the parse is okay, insert all of it at the end
+
+                                tx.send((tag, id.clone(), index_row.clone())).unwrap();
                             }
 
                             Tag::ProcHeap => {
@@ -825,28 +871,7 @@ impl CrashDump {
                                 crash_dump
                                     .processes_heap
                                     .insert(id.clone(), InfoOrIndex::Index(index_row.clone()));
-
-                                let contents = Self::load_section(&index_row, &mut file)?;
-
-                                if let Ok(DumpSection::Generic(proc_heap)) =
-                                    parse_section(&contents, Some(&id))
-                                {
-                                    // proc heap is structured as <ADDR>:<VAL> such as `FFFF454383C8:lI47|HFFFF4543846`
-                                    proc_heap.raw_lines.into_iter().for_each(|line| {
-                                        let parts: Vec<&str> = line.splitn(2, ':').collect();
-                                        if parts.len() == 2 {
-                                            crash_dump
-                                                .all_heap_addresses
-                                                .insert(parts[0].to_string(), parts[1].to_string());
-                                        } else {
-                                            // Handle the case where the line does not split into two parts
-                                            eprintln!(
-                                                "Line does not contain expected delimiter: {}",
-                                                line
-                                            );
-                                        }
-                                    });
-                                }
+                                tx.send((tag, id.clone(), index_row.clone())).unwrap();
                             }
 
                             Tag::ProcStack => {
@@ -877,7 +902,7 @@ impl CrashDump {
                     for index_row in index_rows {
                         match tag {
                             Tag::Memory => {
-                                let contents = Self::load_section(&index_row, &mut file)?;
+                                let contents = Self::load_section(&index_row, &file)?;
 
                                 if let Ok(DumpSection::Memory(memory)) =
                                     parse_section(&contents, None)
@@ -887,7 +912,7 @@ impl CrashDump {
                             }
                             Tag::PersistentTerms => {
                                 // persistent terms are structured like `HFFFF555F6DB0|I6`
-                                let contents = Self::load_section(&index_row, &mut file)?;
+                                let contents = Self::load_section(&index_row, &file)?;
 
                                 if let Ok(DumpSection::Generic(persistent_terms)) =
                                     parse_section(&contents, None)
@@ -912,7 +937,7 @@ impl CrashDump {
 
                             Tag::Literals => {
                                 // Literals are structured like `FFFF55210230:t3:I6,I10,I14`
-                                let contents = Self::load_section(&index_row, &mut file)?;
+                                let contents = Self::load_section(&index_row, &file)?;
 
                                 if let Ok(DumpSection::Generic(literals)) =
                                     parse_section(&contents, None)
@@ -939,6 +964,14 @@ impl CrashDump {
                 }
             }
         }
+
+        drop(tx);
+        // Wait for all consumer threads to finish
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        println!("handle {:?}", handles);
         Ok(crash_dump)
     }
 
