@@ -55,6 +55,8 @@ use std::os::unix::prelude::FileExt;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
 use std::thread; // Import rayon traits
 
 pub const MAX_DEPTH_PARSE_DATATYPE: usize = 5;
@@ -513,7 +515,9 @@ impl CrashDump {
     /// If eager, we parse the section immediately and store the `Info`.
     ///
     /// If lazy, we store the `Index` and defer parsing until later.
-    pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
+    pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {    let now = Instant::now();
+        let now = Instant::now();
+
         let crash_dump = Arc::new(Mutex::new(CrashDump::new()));
         let file = File::open(file_path)?;
         let file = Arc::new(file);
@@ -694,6 +698,9 @@ impl CrashDump {
             handle.join().unwrap();
         }
 
+        let elapsed = now.elapsed();
+        println!("Parsing took: {:.2?}", elapsed);
+    
         //println!("handle {:?}", handles);
         Ok(Arc::try_unwrap(crash_dump)
             .unwrap_or_else(|arc| panic!("Mutex still locked: {:?}", arc))
