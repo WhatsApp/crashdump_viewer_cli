@@ -56,6 +56,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use std::thread::available_parallelism;
 
 use std::thread; // Import rayon traits
 
@@ -526,7 +527,10 @@ impl CrashDump {
             channel::Sender<(Tag, String, IndexRow)>,
             channel::Receiver<(Tag, String, IndexRow)>,
         ) = channel::unbounded();
-        let num_consumers = 20;
+
+        let num_consumers = available_parallelism().unwrap().get();
+
+        println!("num_consumers: {}", num_consumers);
         let mut handles = Vec::new();
 
         for _ in 0..num_consumers {
