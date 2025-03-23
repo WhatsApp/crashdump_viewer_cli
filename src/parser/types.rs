@@ -55,8 +55,8 @@ use std::os::unix::prelude::FileExt;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use std::thread::available_parallelism;
+use std::time::Instant;
 
 use std::thread; // Import rayon traits
 
@@ -516,7 +516,7 @@ impl CrashDump {
     /// If eager, we parse the section immediately and store the `Info`.
     ///
     /// If lazy, we store the `Index` and defer parsing until later.
-    pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {    let now = Instant::now();
+    pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
         let now = Instant::now();
 
         let crash_dump = Arc::new(Mutex::new(CrashDump::new()));
@@ -546,7 +546,7 @@ impl CrashDump {
                                 if let Ok(DumpSection::Proc(proc)) =
                                     parse_section(&contents, Some(&id))
                                 {
-                                    let mut cd = crash_dump.lock().unwrap();
+                                    let cd = crash_dump.lock().unwrap();
                                     cd.processes.insert(id, InfoOrIndex::Info(proc));
                                 }
                             }
@@ -556,7 +556,7 @@ impl CrashDump {
                                 if let Ok(DumpSection::Generic(proc_heap)) =
                                     parse_section(&contents, Some(&id))
                                 {
-                                    let mut cd = crash_dump.lock().unwrap();
+                                    let cd = crash_dump.lock().unwrap();
                                     proc_heap.raw_lines.into_iter().for_each(|line| {
                                         let parts: Vec<&str> = line.splitn(2, ':').collect();
                                         if parts.len() == 2 {
@@ -577,7 +577,7 @@ impl CrashDump {
                                 if let Ok(DumpSection::Generic(literals)) =
                                     parse_section(&contents, None)
                                 {
-                                    let mut cd = crash_dump.lock().unwrap();
+                                    let cd = crash_dump.lock().unwrap();
                                     literals.raw_lines.into_iter().for_each(|line| {
                                         let parts: Vec<&str> = line.splitn(2, ':').collect();
                                         if parts.len() == 2 {
@@ -598,7 +598,7 @@ impl CrashDump {
                                 if let Ok(DumpSection::Generic(persistent_terms)) =
                                     parse_section(&contents, None)
                                 {
-                                    let mut cd = crash_dump.lock().unwrap();
+                                    let cd = crash_dump.lock().unwrap();
                                     persistent_terms.raw_lines.into_iter().for_each(|line| {
                                         let parts: Vec<&str> = line.splitn(2, '|').collect();
                                         if parts.len() == 2 {
@@ -703,8 +703,8 @@ impl CrashDump {
         }
 
         let elapsed = now.elapsed();
-        println!("Parsing took: {:.2?}", elapsed);
-    
+        println!("Parsing everything took: {:.2?}", elapsed);
+
         //println!("handle {:?}", handles);
         Ok(Arc::try_unwrap(crash_dump)
             .unwrap_or_else(|arc| panic!("Mutex still locked: {:?}", arc))

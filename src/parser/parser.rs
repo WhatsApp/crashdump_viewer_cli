@@ -32,6 +32,7 @@ use std::fs::OpenOptions;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Instant;
 
 struct IndexSink {
     matches: Vec<(Tag, Option<String>, u64)>,
@@ -120,6 +121,8 @@ impl CDParser {
     ///
     /// Returns a `Result` containing the `IndexMap` if successful, or an `io::Error` if an error occurred during file processing.
     pub fn build_index(&self) -> Result<IndexMap, io::Error> {
+        let now = Instant::now();
+
         let matcher = RegexMatcher::new(r"^=.*").unwrap();
         let mut searcher = SearcherBuilder::new()
             .binary_detection(BinaryDetection::quit(b'\x00'))
@@ -184,6 +187,10 @@ impl CDParser {
                 }
             }
         }
+
+        let elapsed = now.elapsed();
+        println!("Building index took: {:.2?}", elapsed);
+
         Ok(index_map)
     }
 
