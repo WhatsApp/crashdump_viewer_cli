@@ -220,8 +220,7 @@ impl CDParser {
     }
 
     // after building the IndexMap, we can iterate through it and deserialize into the CrashDump struct
-    pub fn parse(&self) -> io::Result<CrashDump> {
-        let index_map = self.build_index()?;
+    pub fn parse(&self, index_map: &IndexMap) -> io::Result<CrashDump> {
         let crash_dump = CrashDump::from_index_map(&index_map, &self.filepath);
 
         crash_dump

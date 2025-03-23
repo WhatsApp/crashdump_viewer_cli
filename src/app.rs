@@ -133,7 +133,9 @@ impl App<'_> {
         //     *val = idx_str;
         // });
 
-        ret.crash_dump = parser.parse().unwrap();
+        
+        ret.index_map = parser.build_index().unwrap();
+        ret.crash_dump = parser.parse(&ret.index_map).unwrap();   
 
         //println!("heap addrs: {:?}", ret.crash_dump.all_heap_addresses);
         //println!("binaries: {:?}", ret.crash_dump.visited_binaries);
