@@ -180,10 +180,10 @@ impl App<'_> {
         //         }
         //     })
         //     .collect();
-        let mut sorted_keys: Vec<(&String, &InfoOrIndex<ProcInfo>)> = ret
-            .crash_dump
-            .processes
-            .par_iter() // Use parallel iterator
+
+        let read_only_processes = ret.crash_dump.processes.clone().into_read_only();
+        let mut sorted_keys: Vec<(&String, &InfoOrIndex<ProcInfo>)> = read_only_processes
+            .iter()
             .collect();
         sorted_keys.par_sort_by(|a, b| match (a.1, b.1) {
             (InfoOrIndex::Info(proc_info_a), InfoOrIndex::Info(proc_info_b)) => {
@@ -198,18 +198,30 @@ impl App<'_> {
         ret.tab_lists.get_mut(&SelectedTab::Process).map(|val| {
             *val = sorted_key_list;
         });
+        
         let process_rows: Vec<Row> = ret.tab_lists[&SelectedTab::Process]
-            .par_iter() // Use parallel iterator
-            .map(|pid| match ret.crash_dump.processes.get(pid).unwrap() {
-                InfoOrIndex::Info(proc_info) => {
-                    let item = proc_info.ref_array();
-                    Row::new(item)
+        .par_iter() // Use parallel iterator
+        .map(|pid| {
+            match ret.crash_dump.processes.get(pid) {
+                Some(process_ref) => {
+                    match *process_ref.value() { // Dereference the Ref to access the inner value
+                        InfoOrIndex::Info(ref proc_info) => {
+                            let item = proc_info.ref_array();
+                            Row::new(item)
+                        }
+                        _ => {
+                            // Handle the Index case if it's possible in this context
+                            Row::new(vec![format!("Unexpected Index for pid: {:?}", pid)]) // Or handle differently
+                        }
+                    }
                 }
-                _ => {
-                    unreachable!();
+                None => {
+                    // Handle the case where the PID is not found in the DashMap
+                    Row::new(vec![format!("Process not found: {:?}", pid)]) // Or handle differently
                 }
-            })
-            .collect();
+            }
+        })
+        .collect();
 
         let selected_row_style = Style::default().fg(Color::White);
         let selected_col_style = Style::default().fg(Color::White);
@@ -242,8 +254,7 @@ impl App<'_> {
         .column_highlight_style(selected_col_style)
         .cell_highlight_style(selected_cell_style)
         .highlight_spacing(HighlightSpacing::Always)
-        .block(Block::bordered().title(SelectedTab::Process.to_string()))
-        .highlight_style(Style::default().bg(Color::Blue));
+        .block(Block::bordered().title(SelectedTab::Process.to_string()));
 
         ///////// Process Group Info
 
@@ -292,8 +303,7 @@ impl App<'_> {
         .column_highlight_style(selected_col_style)
         .cell_highlight_style(selected_cell_style)
         .highlight_spacing(HighlightSpacing::Always)
-        .block(Block::bordered().title(SelectedTab::Process.to_string()))
-        .highlight_style(Style::default().bg(Color::Blue));
+        .block(Block::bordered().title(SelectedTab::Process.to_string()));
 
         ret.footer_text.insert(SelectedTab::Process, "Press S for Stack, H for Heap, M for Message Queue | < > to change tabs | Press q to quit".to_string());
 
@@ -516,13 +526,33 @@ impl SelectedTab {
         }
 
         let selected_pid = &app.tab_lists[&SelectedTab::Process][selected_item];
-        let selected_process = app.crash_dump.processes.get(selected_pid).unwrap();
+        let selected_process_result = app.crash_dump.processes.get(selected_pid);
 
-        let process_info_text = match selected_process {
-            InfoOrIndex::Info(proc_info) => proc_info.format_as_ratatui_text(),
-            InfoOrIndex::Index(_) => unreachable!(),
+        let active_proc_info: types::ProcInfo;
+        let process_info_text: Text;
+        match selected_process_result {
+            Some(process_ref) => {
+                
+                let text = match *process_ref.value() {
+                    InfoOrIndex::Info(ref proc_info) => {
+                        let proc_info: &types::ProcInfo = proc_info;
+                        active_proc_info = proc_info.clone();
+                        active_proc_info.format_as_ratatui_text()
+                    }
+                    InfoOrIndex::Index(_) => {
+            
+                        Text::raw(format!("Index for pid: {:?}", selected_pid).to_string())
+                    }
+                };
+                process_info_text = text;
+            }
+            None => {
+                
+                process_info_text = Text::raw(format!("Process not found: {:?}", selected_pid).to_string());
+            }
         };
-
+    
+        
         let (inspect_info_title, inspect_info_text) = match app.process_view_state {
             ProcessViewState::Stack => ("Decoded Stack", app.get_stack_info(selected_pid).unwrap()),
             ProcessViewState::Heap => ("Decoded Heap", app.get_heap_info(selected_pid).unwrap()),
@@ -568,30 +598,54 @@ impl SelectedTab {
 
         let selected_item = group_table_state.selected().unwrap_or(0);
         let selected_pid = &app.tab_lists[&SelectedTab::ProcessGroup][selected_item];
-        let selected_process = app.crash_dump.processes.get(selected_pid);
-
-        let process_info_text = match selected_process {
-            Some(InfoOrIndex::Info(proc_info)) => proc_info.format_as_ratatui_text(),
-            _ => Text::raw("No process info found".to_string()),
+        let selected_process_result = app.crash_dump.processes.get(selected_pid);
+        
+        let active_proc_info: types::ProcInfo;
+        let process_info_text: Text;
+        match selected_process_result {
+            Some(process_ref) => {
+                
+                let text = match *process_ref.value() {
+                    InfoOrIndex::Info(ref proc_info) => {
+                        let proc_info: &types::ProcInfo = proc_info;
+                        active_proc_info = proc_info.clone();
+                        active_proc_info.format_as_ratatui_text()
+                    }
+                    InfoOrIndex::Index(_) => {
+                        eprintln!("Unexpected InfoOrIndex::Index for selected pid: {:?}", selected_pid);
+                        Text::raw(format!("Index for pid: {:?}", selected_pid).to_string())
+                    }
+                };
+                process_info_text = text;
+            }
+            None => {
+                eprintln!("Process not found for pid: {:?}", selected_pid);
+                process_info_text = Text::raw(format!("Process not found: {:?}", selected_pid).to_string());
+            }
         };
-
+        
         let children: Vec<Row> = match app.ancestor_map.get(selected_pid) {
-            Some(children) => {
-                // for every child pid, look it up in the master dictionary and call .summary_ref_array on it
-                // and turn it into a row
-                children
-                    .into_iter()
+            Some(child_pids) => {
+                child_pids
+                    .iter() // Use iter() here as we are just borrowing the child_pids
                     .map(|child_pid| {
-                        let child_info = app.crash_dump.processes.get(child_pid).unwrap();
-                        match child_info {
-                            InfoOrIndex::Info(proc_info) => Row::new(proc_info.summary_ref_array()),
-                            // if we don't find it, just print the pid
-                            InfoOrIndex::Index(_) => Row::new(vec![child_pid.clone()]),
+                        match app.crash_dump.processes.get(child_pid) {
+                            Some(child_info_ref) => {
+                                match *child_info_ref.value() { // Dereference the Ref
+                                    InfoOrIndex::Info(ref proc_info) => Row::new(proc_info.summary_ref_array()),
+                                    InfoOrIndex::Index(_) => Row::new(vec![format!("{:?}", child_pid)]), // Format the pid
+                                }
+                            }
+                            None => {
+                                // Handle the case where child_pid is not found in processes
+                                eprintln!("Child process info not found for pid: {:?}", child_pid);
+                                Row::new(vec![format!("Info not found: {:?}", child_pid)]) 
+                            }
                         }
                     })
                     .collect()
             }
-            _ => vec![Row::new(vec!["No data".to_string()])],
+            None => vec![Row::new(vec!["No data".to_string()])],
         };
 
         // needs Pid, Name, Reductions, Memory, MsgQ Length,

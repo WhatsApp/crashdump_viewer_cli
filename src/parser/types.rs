@@ -41,6 +41,8 @@
 //
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+use crossbeam::channel;
+use dashmap::DashMap;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use rayon::prelude::*;
@@ -51,10 +53,9 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::os::unix::prelude::FileExt;
 use std::path::PathBuf;
-use crossbeam::channel;
-use std::sync::Arc;
-use std::thread;
-use std::str::FromStr; // Import rayon traits
+use std::str::FromStr;
+use std::sync::{Arc, Mutex};
+use std::thread; // Import rayon traits
 
 pub const MAX_DEPTH_PARSE_DATATYPE: usize = 5;
 const CHUNK_SIZE: usize = 100; // You can adjust this value as needed
@@ -399,7 +400,7 @@ impl IndexValue {
 
 pub type IndexMap = HashMap<Tag, IndexValue>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum InfoOrIndex<T> {
     Index(IndexRow),
     Info(T),
@@ -412,11 +413,12 @@ pub struct CrashDump {
     pub memory: MemoryInfo,
     pub allocators: Vec<InfoOrIndex<AllocatorInfo>>,
     pub nodes: Vec<InfoOrIndex<NodeInfo>>,
-    pub processes: HashMap<String, InfoOrIndex<ProcInfo>>,
-    pub processes_heap: HashMap<String, InfoOrIndex<ProcHeapInfo>>,
-    pub processes_stack: HashMap<String, InfoOrIndex<ProcStackInfo>>,
-    pub processes_messages: HashMap<String, InfoOrIndex<ProcMessagesInfo>>,
-    pub ports: HashMap<String, InfoOrIndex<PortInfo>>,
+
+    pub processes: DashMap<String, InfoOrIndex<ProcInfo>>,
+    pub processes_heap: DashMap<String, InfoOrIndex<ProcHeapInfo>>,
+    pub processes_stack: DashMap<String, InfoOrIndex<ProcStackInfo>>,
+    pub processes_messages: DashMap<String, InfoOrIndex<ProcMessagesInfo>>,
+    pub ports: DashMap<String, InfoOrIndex<PortInfo>>,
     pub schedulers: Vec<InfoOrIndex<SchedulerInfo>>,
     pub ets: Vec<InfoOrIndex<EtsInfo>>,
     pub timers: Vec<InfoOrIndex<TimerInfo>>,
@@ -427,16 +429,18 @@ pub struct CrashDump {
     ///
     /// This is used to store sections that we don't know how to parse yet, or sections that
     /// we want to defer parsing until later.
-    pub raw_sections: HashMap<String, Vec<u8>>,
+    pub raw_sections: DashMap<String, Vec<u8>>,
     pub group_info_map: HashMap<String, GroupInfo>,
 
     // derived data
-    pub all_heap_addresses: HashMap<String, String>,
+    pub all_heap_addresses: DashMap<String, String>,
+    pub visited_binaries: DashMap<String, usize>,
+
+    // unused
     pub all_visited_heap_addresses: HashSet<String>,
-    pub visited_binaries: HashMap<String, usize>,
-    pub visited_binaries_found: HashMap<String, usize>,
-    pub visited_binaries_not_found: HashMap<String, String>,
-    pub all_off_heap_binaries: HashMap<String, (usize, usize)>,
+    pub visited_binaries_found: DashMap<String, usize>,
+    pub visited_binaries_not_found: DashMap<String, String>,
+    pub all_off_heap_binaries: DashMap<String, (usize, usize)>,
 }
 
 impl CrashDump {
@@ -462,25 +466,27 @@ impl CrashDump {
             },
             allocators: vec![],
             nodes: vec![],
-            processes: HashMap::new(),
-            processes_heap: HashMap::new(),
-            processes_stack: HashMap::new(),
-            processes_messages: HashMap::new(),
-            ports: HashMap::new(),
+            processes: DashMap::new(),
+            processes_heap: DashMap::new(),
+            processes_stack: DashMap::new(),
+            processes_messages: DashMap::new(),
+            ports: DashMap::new(),
             schedulers: vec![],
             ets: vec![],
             timers: vec![],
             atoms: vec![],
             loaded_modules: vec![],
             persistent_terms: vec![],
-            raw_sections: HashMap::new(),
+            raw_sections: DashMap::new(),
             group_info_map: HashMap::new(),
-            all_heap_addresses: HashMap::new(),
+            all_heap_addresses: DashMap::new(),
             all_visited_heap_addresses: HashSet::new(),
-            visited_binaries: HashMap::new(),
-            visited_binaries_found: HashMap::new(),
-            visited_binaries_not_found: HashMap::new(),
-            all_off_heap_binaries: HashMap::new(),
+            visited_binaries: DashMap::new(),
+
+            visited_binaries_found: DashMap::new(),
+
+            visited_binaries_not_found: DashMap::new(),
+            all_off_heap_binaries: DashMap::new(),
         }
     }
 
@@ -489,10 +495,9 @@ impl CrashDump {
         let length: u64 = index_row.length.parse().unwrap_or(0);
 
         let mut buffer = vec![0; length as usize];
-        
+
         // file.seek(SeekFrom::Start(start_offset))?;
 
-        
         // file.read_exact(&mut buffer)?;
 
         file.read_exact_at(&mut buffer, start_offset)?;
@@ -500,296 +505,6 @@ impl CrashDump {
         let contents = String::from_utf8_lossy(&buffer);
         Ok(contents.to_string())
     }
-
-    // pub fn from_index_map_par(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
-    //     let mut file = File::open(file_path)?;
-
-    //     // 1. Serial Sections
-    //     let preamble = CrashDump::load_and_parse_preamble(index_map, &mut file)?;
-    //     let memory = CrashDump::load_and_parse_memory(index_map, &mut file)?;
-
-    //     // 2. Parallel Map Processing
-    //     let all_heap_addresses = CrashDump::process_all_heap_addresses(index_map, &mut file);
-    //     let processes_stack = CrashDump::process_processes_stack(index_map, &mut file)?;
-    //     let visited_binaries = CrashDump::process_visited_binaries(index_map, &mut file)?;
-    //     let processes_heap = CrashDump::process_processes_heap(index_map, &mut file)?;
-    //     let processes = CrashDump::process_processes(index_map, &mut file)?;
-
-    //     // Construct the final CrashDump
-    //     Ok(CrashDump {
-    //         preamble,
-    //         memory,
-    //         allocators: vec![], // Initialize other fields as needed
-    //         nodes: vec![],
-    //         processes,
-    //         processes_heap,
-    //         processes_stack,
-    //         ports: HashMap::new(),
-    //         schedulers: vec![],
-    //         ets: vec![],
-    //         timers: vec![],
-    //         atoms: vec![],
-    //         loaded_modules: vec![],
-    //         persistent_terms: vec![],
-    //         raw_sections: HashMap::new(),
-    //         group_info_map: HashMap::new(),
-    //         all_heap_addresses,
-    //         all_visited_heap_addresses: HashSet::new(),
-    //         visited_binaries,
-    //         visited_binaries_found: HashMap::new(),
-    //         visited_binaries_not_found: HashMap::new(),
-    //         all_off_heap_binaries: HashMap::new(),
-    //     })
-    // }
-
-    // fn load_and_parse_preamble(index_map: &IndexMap, file: &mut File) -> io::Result<Preamble> {
-    //     if let Some(IndexValue::Map(preamble_map)) = index_map.get(&Tag::Preamble) {
-    //         if let Some(index_row) = preamble_map.values().next() {
-    //             let contents = CrashDump::load_section(index_row, file)?;
-    //             if let Ok(DumpSection::Preamble(preamble)) = parse_section(&contents, None) {
-    //                 return Ok(preamble);
-    //             }
-    //         }
-    //     }
-    //     Err(io::Error::new(io::ErrorKind::Other, "Preamble not found or invalid"))
-    // }
-
-    // fn load_and_parse_memory(index_map: &IndexMap, file: &mut File) -> io::Result<MemoryInfo> {
-    //     if let Some(IndexValue::List(memory_list)) = index_map.get(&Tag::Memory) {
-    //         if let Some(index_row) = memory_list.first() {
-    //             let contents = CrashDump::load_section(index_row, file)?;
-    //             if let Ok(DumpSection::Memory(memory)) = parse_section(&contents, None) {
-    //                 return Ok(memory);
-    //             }
-    //         }
-    //     }
-    //     Err(io::Error::new(io::ErrorKind::Other, "Memory section not found or invalid"))
-    // }
-
-    // fn process_all_heap_addresses(index_map: &IndexMap, file: &mut File) -> HashMap<String, String> {
-    //     let keys: Vec<_> = index_map
-    //         .par_iter()
-    //         .filter(|(tag, _)| matches!(tag, Tag::ProcHeap | Tag::PersistentTerms | Tag::Literals))
-    //         .flat_map(|(_, index_value)| {
-    //             match index_value {
-    //                 IndexValue::Map(inner_map) => inner_map.keys().cloned().collect::<Vec<_>>(),
-    //                 IndexValue::List(_) => vec![],
-    //             }
-    //         })
-    //         .collect();
-
-    //     keys
-    //         .par_chunks(CHUNK_SIZE)
-    //         .fold(
-    //             || HashMap::new(),
-    //             |mut local_map, chunk| {
-    //                 for key in chunk {
-    //                     // 1. ProcHeap
-    //                     if let Some(index_row) = index_map.get(&Tag::ProcHeap).and_then(|v| v.as_map_mut()).and_then(|map| map.get(key)) {
-    //                         let contents = CrashDump::load_section(index_row, file).unwrap();
-    //                         if let Ok(DumpSection::Generic(generic_section)) = parse_section(&contents, Some(key)) {
-    //                             generic_section.raw_lines.into_iter().for_each(|line| {
-    //                                 let parts: Vec<&str> = line.splitn(2, ':').collect();
-    //                                 if parts.len() == 2 {
-    //                                     local_map.insert(parts[0].to_string(), parts[1].to_string());
-    //                                 } else {
-    //                                     eprintln!("Line does not contain expected delimiter: {}", line);
-    //                                 }
-    //                             });
-    //                         }
-    //                     }
-
-    //                     // 2. PersistentTerms
-    //                     if let Some(index_row) = index_map.get(&Tag::PersistentTerms).and_then(|v| v.as_list_mut()).and_then(|list| list.first()) {
-    //                         let contents = CrashDump::load_section(index_row, file).unwrap();
-    //                         if let Ok(DumpSection::Generic(generic_section)) = parse_section(&contents, Some(key)) {
-    //                             generic_section.raw_lines.into_iter().for_each(|line| {
-    //                                 let parts: Vec<&str> = line.splitn(2, '|').collect();
-    //                                 if parts.len() == 2 {
-    //                                     local_map.insert(parts[0].to_string(), parts[1].to_string());
-    //                                 } else {
-    //                                     eprintln!("Line does not contain expected delimiter: {}", line);
-    //                                 }
-    //                             });
-    //                         }
-    //                     }
-
-    //                     // 3. Literals
-    //                     if let Some(index_row) = index_map.get(&Tag::Literals).and_then(|v| v.as_list_mut()).and_then(|list| list.first()) {
-    //                         let contents = CrashDump::load_section(index_row, file).unwrap();
-    //                         if let Ok(DumpSection::Generic(generic_section)) = parse_section(&contents, Some(key)) {
-    //                             generic_section.raw_lines.into_iter().for_each(|line| {
-    //                                 let parts: Vec<&str> = line.splitn(2, ':').collect();
-    //                                 if parts.len() == 2 {
-    //                                     local_map.insert(parts[0].to_string(), parts[1].to_string());
-    //                                 } else {
-    //                                     eprintln!("Line does not contain expected delimiter: {}", line);
-    //                                 }
-    //                             });
-    //                         }
-    //                     }
-    //                 }
-    //                 local_map
-    //             },
-    //         )
-    //         .reduce(
-    //             || HashMap::new(),
-    //             |mut acc, local_map| {
-    //                 acc.extend(local_map);
-    //                 acc
-    //             },
-    //         )
-    // }
-
-    // fn process_processes_stack(index_map: &IndexMap, file: &mut File) -> io::Result<HashMap<String, InfoOrIndex<ProcStackInfo>>> {
-    //     index_map
-    //         .get(&Tag::ProcStack)
-    //         .and_then(|v| v.as_map_mut())
-    //         .map(|inner_map| {
-    //             let keys: Vec<_> = inner_map.keys().cloned().collect(); // Collect keys
-
-    //             keys
-    //                 .par_chunks(CHUNK_SIZE)
-    //                 .fold(
-    //                     || HashMap::new(),
-    //                     |mut local_map, chunk| {
-    //                         for key in chunk {
-    //                             if let Some(index_row) = inner_map.get(key) {
-    //                                 // Load the ProcStack section
-    //                                 let contents = CrashDump::load_section(index_row, file).unwrap();
-
-    //                                 // Parse and process the section
-    //                                 if let Ok(DumpSection::ProcStack(proc_stack)) = parse_section(&contents, Some(key)) {
-    //                                     local_map.insert(key.clone(), InfoOrIndex::Info(proc_stack));
-    //                                 }
-    //                             }
-    //                         }
-    //                         local_map
-    //                     },
-    //                 )
-    //                 .reduce(
-    //                     || HashMap::new(),
-    //                     |mut acc, local_map| {
-    //                         acc.extend(local_map);
-    //                         acc
-    //                     },
-    //                 )
-    //         })
-    //         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "ProcStack section not found"))
-    // }
-
-    // fn process_visited_binaries(index_map: &IndexMap, file: &mut File) -> io::Result<HashMap<String, usize>> {
-    //     index_map
-    //         .get(&Tag::Binary)
-    //         .and_then(|v| v.as_map_mut())
-    //         .map(|inner_map| {
-    //             let keys: Vec<_> = inner_map.keys().cloned().collect(); // Collect keys
-
-    //             keys
-    //                 .par_chunks(CHUNK_SIZE)
-    //                 .fold(
-    //                     || HashMap::new(),
-    //                     |mut local_map, chunk| {
-    //                         for key in chunk {
-    //                             if let Some(index_row) = inner_map.get(key) {
-    //                                 // No need to load the section, just process the index row
-    //                                 if let Some(binary_id) = &index_row.id {
-    //                                     let len = index_row.length.parse::<usize>().unwrap_or(0);
-    //                                     local_map.insert(binary_id.clone(), len);
-    //                                 }
-    //                             }
-    //                         }
-    //                         local_map
-    //                     },
-    //                 )
-    //                 .reduce(
-    //                     || HashMap::new(),
-    //                     |mut acc, local_map| {
-    //                         acc.extend(local_map);
-    //                         acc
-    //                     },
-    //                 )
-    //         })
-    //         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Binary section not found"))
-    // }
-
-    // fn process_processes_heap(index_map: &IndexMap, file: &mut File) -> io::Result<HashMap<String, InfoOrIndex<ProcHeapInfo>>> {
-    //     let chunk_size = 10; // Adjust as needed
-
-    //     index_map
-    //         .get(&Tag::ProcHeap)
-    //         .and_then(|v| v.as_map_mut())
-    //         .map(|inner_map| {
-    //             let keys: Vec<_> = inner_map.keys().cloned().collect(); // Collect keys
-
-    //             keys
-    //                 .par_chunks(CHUNK_SIZE)
-    //                 .fold(
-    //                     || HashMap::new(),
-    //                     |mut local_map, chunk| {
-    //                         for key in chunk {
-    //                             if let Some(index_row) = inner_map.get(key) {
-    //                                 // Load the ProcHeap section
-    //                                 let contents = CrashDump::load_section(index_row, file).unwrap();
-
-    //                                 // Parse and process the section (adapt parsing as needed)
-    //                                 if let Ok(DumpSection::Generic(generic_section)) = parse_section(&contents, Some(key)) {
-    //                                     // Assuming you have a function to convert GenericSection to ProcHeapInfo
-    //                                     let proc_heap_info = ProcHeapInfo::from_generic_section(&generic_section);
-    //                                     local_map.insert(key.clone(), InfoOrIndex::Info(proc_heap_info));
-    //                                 }
-    //                             }
-    //                         }
-    //                         local_map
-    //                     },
-    //                 )
-    //                 .reduce(
-    //                     || HashMap::new(),
-    //                     |mut acc, local_map| {
-    //                         acc.extend(local_map);
-    //                         acc
-    //                     },
-    //                 )
-    //         })
-    //         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "ProcHeap section not found"))
-    // }
-
-    // fn process_processes(index_map: &IndexMap, file: &mut File) -> io::Result<HashMap<String, InfoOrIndex<ProcInfo>>> {
-    //     index_map
-    //         .get(&Tag::Proc)
-    //         .and_then(|v| v.as_map_mut())
-    //         .map(|inner_map| {
-    //             let keys: Vec<_> = inner_map.keys().cloned().collect(); // Collect keys
-
-    //             keys
-    //                 .par_chunks(CHUNK_SIZE)
-    //                 .fold(
-    //                     || HashMap::new(),
-    //                     |mut local_map, chunk| {
-    //                         for key in chunk {
-    //                             if let Some(index_row) = inner_map.get(key) {
-    //                                 // Load the Proc section
-    //                                 let contents = CrashDump::load_section(index_row, file).unwrap();
-
-    //                                 // Parse and process the section
-    //                                 if let Ok(DumpSection::Proc(proc_info)) = parse_section(&contents, Some(key)) {
-    //                                     local_map.insert(key.clone(), InfoOrIndex::Info(proc_info));
-    //                                 }
-    //                             }
-    //                         }
-    //                         local_map
-    //                     },
-    //                 )
-    //                 .reduce(
-    //                     || HashMap::new(),
-    //                     |mut acc, local_map| {
-    //                         acc.extend(local_map);
-    //                         acc
-    //                     },
-    //                 )
-    //         })
-    //         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Proc section not found"))
-    // }
 
     /// Creates a new `CrashDump` from an `IndexMap`.
     ///
@@ -799,41 +514,96 @@ impl CrashDump {
     ///
     /// If lazy, we store the `Index` and defer parsing until later.
     pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
-        let mut crash_dump = CrashDump::new();
+        let crash_dump = Arc::new(Mutex::new(CrashDump::new()));
         let file = File::open(file_path)?;
         let file = Arc::new(file);
 
-        // let mut child_map: HashMap<String, Vec<String>> = HashMap::new();
-
-        let (tx, rx) = channel::unbounded();
+        let (tx, rx): (
+            channel::Sender<(Tag, String, IndexRow)>,
+            channel::Receiver<(Tag, String, IndexRow)>,
+        ) = channel::unbounded();
         let num_consumers = 20;
         let mut handles = Vec::new();
 
-        // TODO: fixthis with sharded dashmap
         for _ in 0..num_consumers {
             let rx = rx.clone();
             let file = Arc::clone(&file);
+            let crash_dump = Arc::clone(&crash_dump);
             let handle = thread::spawn(move || {
                 while let Ok((tag, id, index_row)) = rx.recv() {
+                    let result = Self::load_section(&index_row, &file);
                     match tag {
                         Tag::Proc => {
-                            let contents = Self::load_section(&index_row, &file).unwrap();
-                            if let Ok(DumpSection::Proc(proc)) = parse_section(&contents, Some(&id)) {
-                                // dashmap insert
+                            if let Ok(contents) = result {
+                                if let Ok(DumpSection::Proc(proc)) =
+                                    parse_section(&contents, Some(&id))
+                                {
+                                    let mut cd = crash_dump.lock().unwrap();
+                                    cd.processes.insert(id, InfoOrIndex::Info(proc));
+                                }
                             }
                         }
                         Tag::ProcHeap => {
-                            let contents = Self::load_section(&index_row, &file).unwrap();
-                            if let Ok(DumpSection::Generic(proc_heap)) = parse_section(&contents, Some(&id)) {
-                                // dashmap insert
-                                proc_heap.raw_lines.into_iter().for_each(|line| {
-                                    let parts: Vec<&str> = line.splitn(2, ':').collect();
-                                    if parts.len() == 2 {
-                                        addrs.insert(parts[0].to_string(), parts[1].to_string());
-                                    } else {
-                                        eprintln!("Line does not contain expected delimiter: {}", line);
-                                    }
-                                });
+                            if let Ok(contents) = result {
+                                if let Ok(DumpSection::Generic(proc_heap)) =
+                                    parse_section(&contents, Some(&id))
+                                {
+                                    let mut cd = crash_dump.lock().unwrap();
+                                    proc_heap.raw_lines.into_iter().for_each(|line| {
+                                        let parts: Vec<&str> = line.splitn(2, ':').collect();
+                                        if parts.len() == 2 {
+                                            cd.all_heap_addresses
+                                                .insert(parts[0].to_string(), parts[1].to_string());
+                                        } else {
+                                            eprintln!(
+                                                "Line does not contain expected delimiter: {}",
+                                                line
+                                            );
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                        Tag::Literals => {
+                            if let Ok(contents) = result {
+                                if let Ok(DumpSection::Generic(literals)) =
+                                    parse_section(&contents, None)
+                                {
+                                    let mut cd = crash_dump.lock().unwrap();
+                                    literals.raw_lines.into_iter().for_each(|line| {
+                                        let parts: Vec<&str> = line.splitn(2, ':').collect();
+                                        if parts.len() == 2 {
+                                            cd.all_heap_addresses
+                                                .insert(parts[0].to_string(), parts[1].to_string());
+                                        } else {
+                                            eprintln!(
+                                                "Line does not contain expected delimiter: {}",
+                                                line
+                                            );
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                        Tag::PersistentTerms => {
+                            if let Ok(contents) = result {
+                                if let Ok(DumpSection::Generic(persistent_terms)) =
+                                    parse_section(&contents, None)
+                                {
+                                    let mut cd = crash_dump.lock().unwrap();
+                                    persistent_terms.raw_lines.into_iter().for_each(|line| {
+                                        let parts: Vec<&str> = line.splitn(2, '|').collect();
+                                        if parts.len() == 2 {
+                                            cd.all_heap_addresses
+                                                .insert(parts[0].to_string(), parts[1].to_string());
+                                        } else {
+                                            eprintln!(
+                                                "Line does not contain expected delimiter: {}",
+                                                line
+                                            );
+                                        }
+                                    });
+                                }
                             }
                         }
                         _ => {}
@@ -842,9 +612,7 @@ impl CrashDump {
             });
             handles.push(handle);
         }
-        
-        // proc, proc heap, literals, persistent terms are probably the slowest to be read
-        // proc stack and proc messages we're just cloning some ids, not huge
+
         for (tag, index_value) in index_map {
             match index_value {
                 IndexValue::Map(inner_map) => {
@@ -855,45 +623,50 @@ impl CrashDump {
                                 if let Ok(DumpSection::Preamble(preamble)) =
                                     parse_section(&contents, Some(&id))
                                 {
-                                    crash_dump.preamble = preamble;
+                                    crash_dump.lock().unwrap().preamble = preamble;
                                 }
                             }
-
                             Tag::Proc => {
-                                // send the index row and file ref to the processor channel, and then parse it
-                                // when the parse is okay, insert all of it at the end
-
-                                tx.send((tag, id.clone(), index_row.clone())).unwrap();
+                                tx.send((*tag, id.clone(), index_row.clone())).unwrap();
                             }
-
                             Tag::ProcHeap => {
-                                // add only the idx's since we don't need to load them yet
                                 crash_dump
+                                    .lock()
+                                    .unwrap()
                                     .processes_heap
                                     .insert(id.clone(), InfoOrIndex::Index(index_row.clone()));
-                                tx.send((tag, id.clone(), index_row.clone())).unwrap();
+                                tx.send((*tag, id.clone(), index_row.clone())).unwrap();
                             }
-
                             Tag::ProcStack => {
                                 crash_dump
+                                    .lock()
+                                    .unwrap()
                                     .processes_stack
                                     .insert(id.clone(), InfoOrIndex::Index(index_row.clone()));
                             }
-
                             Tag::ProcMessages => {
                                 crash_dump
+                                    .lock()
+                                    .unwrap()
                                     .processes_messages
                                     .insert(id.clone(), InfoOrIndex::Index(index_row.clone()));
                             }
-
                             Tag::Binary => {
-                                // binaries are structured like `=binary:FFFF4D7B8C88`, we only need to know the size
                                 if let Some(binary_id) = &index_row.id {
                                     let len = index_row.length.parse::<usize>().unwrap_or(0);
-                                    crash_dump.visited_binaries.insert(binary_id.clone(), len);
+                                    crash_dump
+                                        .lock()
+                                        .unwrap()
+                                        .visited_binaries
+                                        .insert(binary_id.clone(), len);
                                 }
                             }
-
+                            Tag::Literals => {
+                                tx.send((*tag, id.clone(), index_row.clone())).unwrap();
+                            }
+                            Tag::PersistentTerms => {
+                                tx.send((*tag, id.clone(), index_row.clone())).unwrap();
+                            }
                             _ => {}
                         }
                     }
@@ -903,59 +676,10 @@ impl CrashDump {
                         match tag {
                             Tag::Memory => {
                                 let contents = Self::load_section(&index_row, &file)?;
-
                                 if let Ok(DumpSection::Memory(memory)) =
                                     parse_section(&contents, None)
                                 {
-                                    crash_dump.memory = memory;
-                                }
-                            }
-                            Tag::PersistentTerms => {
-                                // persistent terms are structured like `HFFFF555F6DB0|I6`
-                                let contents = Self::load_section(&index_row, &file)?;
-
-                                if let Ok(DumpSection::Generic(persistent_terms)) =
-                                    parse_section(&contents, None)
-                                {
-                                    persistent_terms.raw_lines.into_iter().for_each(|line| {
-                                        // Split the line on | and add the addr
-                                        let parts: Vec<&str> = line.splitn(2, '|').collect();
-                                        if parts.len() == 2 {
-                                            crash_dump
-                                                .all_heap_addresses
-                                                .insert(parts[0].to_string(), parts[1].to_string());
-                                        } else {
-                                            // Handle the case where the line does not split into two parts
-                                            eprintln!(
-                                                "Line does not contain expected delimiter: {}",
-                                                line
-                                            );
-                                        }
-                                    });
-                                }
-                            }
-
-                            Tag::Literals => {
-                                // Literals are structured like `FFFF55210230:t3:I6,I10,I14`
-                                let contents = Self::load_section(&index_row, &file)?;
-
-                                if let Ok(DumpSection::Generic(literals)) =
-                                    parse_section(&contents, None)
-                                {
-                                    literals.raw_lines.into_iter().for_each(|line| {
-                                        let parts: Vec<&str> = line.splitn(2, ':').collect();
-                                        if parts.len() == 2 {
-                                            crash_dump
-                                                .all_heap_addresses
-                                                .insert(parts[0].to_string(), parts[1].to_string());
-                                        } else {
-                                            // Handle the case where the line does not split into two parts
-                                            eprintln!(
-                                                "Line does not contain expected delimiter: {}",
-                                                line
-                                            );
-                                        }
-                                    });
+                                    crash_dump.lock().unwrap().memory = memory;
                                 }
                             }
                             _ => {}
@@ -966,13 +690,15 @@ impl CrashDump {
         }
 
         drop(tx);
-        // Wait for all consumer threads to finish
         for handle in handles {
             handle.join().unwrap();
         }
 
-        println!("handle {:?}", handles);
-        Ok(crash_dump)
+        //println!("handle {:?}", handles);
+        Ok(Arc::try_unwrap(crash_dump)
+            .unwrap_or_else(|arc| panic!("Mutex still locked: {:?}", arc))
+            .into_inner()
+            .unwrap())
     }
 
     // lines will look like `lA1E:jose_xchacha20_poly1305_crypto|HFFFF4541B8B0`
@@ -982,7 +708,7 @@ impl CrashDump {
     // if it's a offheap binary, simply just print it out the length
     // something with multiple
 
-    pub fn load_proc_heap(&self, index_row: &IndexRow, file: &mut File) -> io::Result<Text> {
+    pub fn load_proc_heap(&self, index_row: &IndexRow, file: &File) -> io::Result<Text> {
         let contents = Self::load_section(index_row, file)?;
         let mut text = Text::default();
 
@@ -1037,7 +763,7 @@ impl CrashDump {
         Ok(text)
     }
 
-    pub fn load_proc_stack(&self, index_row: &IndexRow, file: &mut File) -> io::Result<Text> {
+    pub fn load_proc_stack(&self, index_row: &IndexRow, file: &File) -> io::Result<Text> {
         let contents = Self::load_section(index_row, file)?;
         let mut text = Text::default();
         let mut addr = String::new();
@@ -1082,11 +808,7 @@ impl CrashDump {
         Ok(text)
     }
 
-    pub fn load_proc_message_queue(
-        &self,
-        index_row: &IndexRow,
-        file: &mut File,
-    ) -> io::Result<Text> {
+    pub fn load_proc_message_queue(&self, index_row: &IndexRow, file: &File) -> io::Result<Text> {
         let contents = Self::load_section(index_row, file)?;
         let mut text = Text::default();
         if let Ok(DumpSection::ProcMessages(proc_messages)) =
@@ -1302,11 +1024,10 @@ impl CrashDump {
     // ```
     fn parse_heap(&self, data: &str, depth: usize) -> Result<String, String> {
         let addr = &data[1..]; // Remove 'H'
-        if self.all_heap_addresses.contains_key(addr) {
-            let heap_data = self.all_heap_addresses.get(addr).unwrap();
-            self.parse_datatype(heap_data, depth)
-        } else {
-            Ok(format!("*U - {}", addr))
+
+        match self.all_heap_addresses.get(addr) {
+            Some(heap_data) => self.parse_datatype(heap_data.value(), depth),
+            None => Ok(format!("*U - {}", addr)),
         }
     }
 
@@ -1378,7 +1099,10 @@ impl CrashDump {
                         // Found in visited binaries
                         Ok(format!(
                             "[ref-counted binary: binp0=0x{:x}, offset={}, sz={}, len={}]",
-                            binp0, offset, sz, len
+                            binp0,
+                            offset,
+                            sz,
+                            len.value()
                         ))
                     }
                     None => {
@@ -1417,7 +1141,9 @@ impl CrashDump {
                         if end > *len {
                             return Err(format!(
                                 "Sub binary out of bounds: start={}, end={}, len={}",
-                                start, end, len
+                                start,
+                                end,
+                                len.value()
                             ));
                         }
                         Ok(format!(

@@ -22,6 +22,7 @@ use grep::{
     searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch},
 };
 // use rayon::prelude::*;
+use dashmap::DashMap;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use std::collections::HashMap;
@@ -228,10 +229,11 @@ impl CDParser {
         // seeks to the file using the byteoffsets in the dict and just retrives the raw data
         //println!("{:?}", filepath);
         // println!("{:?}, {:#?}", id, crash_dump.processes_heap.get(id));
-        if let Some(InfoOrIndex::Index(heap_index)) = crash_dump.processes_heap.get(id) {
-            let mut file = OpenOptions::new().read(true).open(filepath)?;
-
-            return crash_dump.load_proc_heap(heap_index, &mut file);
+        if let Some(process_heap_ref) = crash_dump.processes_heap.get(id) {
+            if let InfoOrIndex::Index(ref heap_index) = *process_heap_ref.value() {
+                let file = OpenOptions::new().read(true).open(filepath)?;
+                return crash_dump.load_proc_heap(heap_index, &file);
+            }
         }
         Ok(Text::from(""))
     }
@@ -242,10 +244,12 @@ impl CDParser {
         filepath: &String,
         id: &str,
     ) -> io::Result<Text<'a>> {
-        if let Some(InfoOrIndex::Index(stack_index)) = crash_dump.processes_stack.get(id) {
-            let mut file = OpenOptions::new().read(true).open(filepath)?;
+        if let Some(stack_info_ref) = crash_dump.processes_stack.get(id) {
+            if let InfoOrIndex::Index(ref stack_index) = *stack_info_ref.value() {
+                let file = OpenOptions::new().read(true).open(filepath)?;
 
-            return crash_dump.load_proc_stack(stack_index, &mut file);
+                return crash_dump.load_proc_stack(stack_index, &file);
+            }
         }
         Ok(Text::from(""))
     }
@@ -256,10 +260,12 @@ impl CDParser {
         filepath: &String,
         id: &str,
     ) -> io::Result<Text<'a>> {
-        if let Some(InfoOrIndex::Index(mq_index)) = crash_dump.processes_messages.get(id) {
-            let mut file = OpenOptions::new().read(true).open(filepath)?;
+        if let Some(mq_index_ref) = crash_dump.processes_messages.get(id) {
+            if let InfoOrIndex::Index(ref mq_index) = *mq_index_ref.value() {
+                let file = OpenOptions::new().read(true).open(filepath)?;
 
-            return crash_dump.load_proc_message_queue(mq_index, &mut file);
+                return crash_dump.load_proc_message_queue(mq_index, &file);
+            }
         }
 
         Ok(Text::from(""))
@@ -279,7 +285,7 @@ impl CDParser {
     /// Returns a map of process IDs to their `GroupInfo`.
     pub fn calculate_group_info(
         ancestor_map: &HashMap<String, Vec<String>>,
-        processes: &HashMap<String, InfoOrIndex<ProcInfo>>,
+        processes: &DashMap<String, InfoOrIndex<ProcInfo>>,
     ) -> HashMap<String, GroupInfo> {
         // for each child pid, look it up in the processes section. If it exists, then add its sizes
         let mut group_info_map = HashMap::new();
@@ -294,19 +300,23 @@ impl CDParser {
                 children: children.clone(),
             };
             for child in children {
-                if let Some(InfoOrIndex::Info(proc)) = processes.get(child) {
-                    group_info.total_heap_size += proc.old_bin_vheap + proc.bin_vheap;
-                    group_info.total_heap_size += proc.stack_heap + proc.old_heap;
-                    group_info.total_memory_size += proc.memory;
+                if let Some(proc_ref) = processes.get(child) {
+                    if let InfoOrIndex::Info(ref proc) = *proc_ref.value() {
+                        group_info.total_heap_size += proc.old_bin_vheap + proc.bin_vheap;
+                        group_info.total_heap_size += proc.stack_heap + proc.old_heap;
+                        group_info.total_memory_size += proc.memory;
+                    }
                 }
             }
 
-            if let Some(InfoOrIndex::Info(proc)) = processes.get(pid) {
-                group_info.total_heap_size += proc.old_bin_vheap + proc.bin_vheap;
-                group_info.total_heap_size += proc.stack_heap + proc.old_heap;
-                group_info.total_memory_size += proc.memory;
-                if let Some(pid_name) = &proc.name {
-                    group_info.name = pid_name.clone();
+            if let Some(proc_ref) = processes.get(pid) {
+                if let InfoOrIndex::Info(ref proc) = *proc_ref.value() {
+                    group_info.total_heap_size += proc.old_bin_vheap + proc.bin_vheap;
+                    group_info.total_heap_size += proc.stack_heap + proc.old_heap;
+                    group_info.total_memory_size += proc.memory;
+                    if let Some(pid_name) = &proc.name {
+                        group_info.name = pid_name.clone();
+                    }
                 }
             }
 
@@ -327,18 +337,21 @@ impl CDParser {
     ///
     /// Returns a map of process IDs to their descendants.
     pub fn create_descendants_table(
-        all_processes_info: &HashMap<String, InfoOrIndex<ProcInfo>>,
+        all_processes_info: &DashMap<String, InfoOrIndex<ProcInfo>>,
     ) -> HashMap<String, Vec<String>> {
         let mut descendants: HashMap<String, Vec<String>> = HashMap::new();
 
-        for (pid, proc_info_or_index) in all_processes_info {
+        for ref_multi in all_processes_info.iter() {
+            let pid = ref_multi.key();
+            let proc_info_or_index = ref_multi.value();
+
             if let InfoOrIndex::Info(proc_info) = proc_info_or_index {
                 let mut ancestor = proc_info.spawned_by.clone();
 
                 // Navigate upwards to find the first ancestor with a name
                 while let Some(ref ancestor_pid) = ancestor {
-                    if let Some(ancestor_info) = all_processes_info.get(ancestor_pid.as_str()) {
-                        if let InfoOrIndex::Info(ancestor_proc) = ancestor_info {
+                    if let Some(ancestor_info_ref) = all_processes_info.get(ancestor_pid.as_str()) {
+                        if let InfoOrIndex::Info(ancestor_proc) = ancestor_info_ref.value() {
                             if ancestor_proc.name.is_some() {
                                 break;
                             }
