@@ -228,7 +228,7 @@ impl App<'_> {
             })
             .collect();
 
-        let selected_row_style = Style::default().fg(Color::White);
+        let selected_row_style = Style::default().fg(Color::White).bg(Color::Blue);
         let selected_col_style = Style::default().fg(Color::White);
         let selected_cell_style = Style::default().fg(Color::White);
         let header_style = Style::default().fg(Color::White).bg(Color::Red);
@@ -626,7 +626,6 @@ impl SelectedTab {
                 process_info_text = text;
             }
             None => {
-                eprintln!("Process not found for pid: {:?}", selected_pid);
                 process_info_text =
                     Text::raw(format!("Process not found: {:?}", selected_pid).to_string());
             }
@@ -666,14 +665,14 @@ impl SelectedTab {
             children,
             [
                 Constraint::Length(15),
-                Constraint::Length(25),
-                Constraint::Length(25),
-                Constraint::Length(25),
+                Constraint::Length(60),
+                Constraint::Length(10),
+                Constraint::Length(20),
                 Constraint::Length(25),
             ],
         )
         .header(
-            ["Pid", "Name", "Reductions", "Memory", "MsgQ Length"]
+            ["Pid", "Name", "Memory", "Reductions", "MsgQ Length"]
                 .iter()
                 .map(|&h| Cell::from(h))
                 .collect::<Row>()
@@ -715,3 +714,5 @@ fn render_title(area: Rect, buf: &mut Buffer) {
 fn render_footer(footer_text: &str, area: Rect, buf: &mut Buffer) {
     Line::raw(footer_text).centered().render(area, buf);
 }
+
+

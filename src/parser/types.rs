@@ -57,11 +57,16 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
 use std::time::Instant;
+use std::sync::OnceLock;
+use std::fmt;
+
 
 use std::thread; // Import rayon traits
 
 pub const MAX_DEPTH_PARSE_DATATYPE: usize = 5;
 const CHUNK_SIZE: usize = 100; // You can adjust this value as needed
+
+static WORD_SIZE: OnceLock<u8> = OnceLock::new();
 
 pub const TAG_PREAMBLE: &str = "erl_crash_dump";
 pub const TAG_ABORT: &str = "abort";
@@ -333,14 +338,28 @@ fn parse_section(s: &str, id: Option<&str>) -> Result<DumpSection, String> {
 
     let section = match string_tag_to_enum(section.tag.as_str()) {
         Tag::Preamble => {
+            // if the `System version` section has "[64-bit]", word size is 8 bytes, otherwise 4
+            let system_version = data.get("System version")
+                .map(|s| s.clone())
+                .unwrap_or_else(|| "".to_string());
+            let word_size_local = if system_version.contains("[64-bit]") {
+                8
+            } else {
+                4
+            };
+        
+            // Set the global WORD_SIZE
+            WORD_SIZE.set(word_size_local).expect("WORD_SIZE should only be set once");
+        
             let preamble = Preamble {
                 version: id,
                 time: raw_lines[0].clone(),
                 slogan: data["Slogan"].clone(),
-                erts: data["System version"].clone(),
+                erts: system_version.clone(), // Now system_version owns the String
                 taints: data["Taints"].clone(),
                 atom_count: data["Atoms"].parse::<i64>().unwrap(),
                 calling_thread: data["Calling Thread"].clone(),
+                word_size: word_size_local,
             };
             DumpSection::Preamble(preamble)
         }
@@ -457,6 +476,7 @@ impl CrashDump {
                 taints: "".to_string(),
                 atom_count: 0,
                 calling_thread: "".to_string(),
+                word_size: 8,
             },
             memory: MemoryInfo {
                 total: 0,
@@ -1358,6 +1378,7 @@ pub struct Preamble {
     pub taints: String,
     pub atom_count: i64,
     pub calling_thread: String,
+    pub word_size: u8, // 4 bytes for 32-bit, 8 bytes for 64-bit
 }
 
 impl Preamble {
@@ -1550,7 +1571,7 @@ impl ProcInfo {
         text.lines.push(Line::from(vec![
             Span::styled("Old Heap: ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                format!("{}", self.old_heap),
+                format!("{} ({})", human_bytes(self.old_heap), self.old_heap),
                 Style::default().fg(Color::Cyan),
             ),
         ]));
@@ -1558,7 +1579,7 @@ impl ProcInfo {
         text.lines.push(Line::from(vec![
             Span::styled("Heap Unused: ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                format!("{}", self.heap_unused),
+                format!("{} ({})", human_bytes(self.heap_unused), self.heap_unused),
                 Style::default().fg(Color::Cyan),
             ),
         ]));
@@ -1566,7 +1587,7 @@ impl ProcInfo {
         text.lines.push(Line::from(vec![
             Span::styled("Old Heap Unused: ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                format!("{}", self.old_heap_unused),
+                format!("{} ({})", human_bytes(self.old_heap_unused), self.old_heap_unused),
                 Style::default().fg(Color::Cyan),
             ),
         ]));
@@ -1574,7 +1595,7 @@ impl ProcInfo {
         text.lines.push(Line::from(vec![
             Span::styled("Bin Vheap: ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                format!("{}", self.bin_vheap),
+                format!("{} ({})", human_bytes(self.bin_vheap), self.bin_vheap),
                 Style::default().fg(Color::Cyan),
             ),
         ]));
@@ -1582,7 +1603,7 @@ impl ProcInfo {
         text.lines.push(Line::from(vec![
             Span::styled("Old Bin Vheap: ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                format!("{}", self.old_bin_vheap),
+                format!("{} ({})", human_bytes(self.old_bin_vheap), self.old_bin_vheap),
                 Style::default().fg(Color::Cyan),
             ),
         ]));
@@ -1590,7 +1611,7 @@ impl ProcInfo {
         text.lines.push(Line::from(vec![
             Span::styled("Bin Vheap Unused: ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                format!("{}", self.bin_vheap_unused),
+                format!("{} ({})", human_bytes(self.bin_vheap_unused), self.bin_vheap_unused),
                 Style::default().fg(Color::Cyan),
             ),
         ]));
@@ -1598,14 +1619,16 @@ impl ProcInfo {
         text.lines.push(Line::from(vec![
             Span::styled("Old Bin Vheap Unused: ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                format!("{}", self.old_bin_vheap_unused),
+                format!("{} ({})", human_bytes(self.old_bin_vheap_unused), self.old_bin_vheap_unused),
                 Style::default().fg(Color::Cyan),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
             Span::styled("Memory: ", Style::default().fg(Color::Yellow)),
-            Span::styled(format!("{}", self.memory), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("{} ({})", human_bytes(self.memory), self.memory),
+                Style::default().fg(Color::Cyan)),
         ]));
 
         text.lines.push(Line::from(vec![
@@ -1636,9 +1659,28 @@ impl ProcInfo {
         format!(
             "Pid: {}\nState: {}\nName: {:#?}\nSpawned As: {:#?}\nSpawned By: {:#?}\nMessage Queue Length: {}\nNumber of Heap Fragments: {}\nHeap Fragment Data: {}\nLink List: {:#?}\nReductions: {}\nStack Heap: {}\nOld Heap: {}\nHeap Unused: {}\nOld Heap Unused: {}\nBin Vheap: {}\nOld Bin Vheap: {}\nBin Vheap
 Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\n{:#?}\nInternal State: {:#?}",
-            self.pid, self.state, self.name, self.spawned_as, self.spawned_by, self.message_queue_length, self.number_of_heap_fragments, self.heap_fragment_data, self.link_list, self.reductions, self.stack_heap, self.old_heap, self.heap_unused, self.old_heap_unused, self.bin_vheap, self.old_bin_vheap,
-            self.bin_vheap_unused, self.old_bin_vheap_unused, self.memory, self.arity,
-            self.program_counter, self.internal_state
+            self.pid, 
+            self.state, 
+            self.name, 
+            self.spawned_as, 
+            self.spawned_by, 
+            self.message_queue_length, 
+            self.number_of_heap_fragments, 
+            self.heap_fragment_data, 
+            self.link_list, 
+            self.reductions, 
+            self.stack_heap, 
+            self.old_heap,
+            self.heap_unused, 
+            self.old_heap_unused, 
+            self.bin_vheap, 
+            self.old_bin_vheap,
+            self.bin_vheap_unused, 
+            self.old_bin_vheap_unused, 
+            self.memory, 
+            self.arity,
+            self.program_counter, 
+            self.internal_state
         )
     }
     pub fn headers() -> [&'static str; 9] {
@@ -1660,12 +1702,12 @@ Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\n{:#?}\nInternal Sta
             format!("{}", self.old_bin_vheap),
             self.pid.clone(),
             self.name.clone().unwrap_or_default(),
-            format!("{}", self.memory),
-            format!("{}", self.bin_vheap + self.old_bin_vheap),
-            format!("{}", self.bin_vheap),
-            format!("{}", self.bin_vheap_unused),
-            format!("{}", self.old_bin_vheap),
-            format!("{}", self.old_bin_vheap_unused),
+            human_bytes( self.memory),
+            human_bytes(self.bin_vheap + self.old_bin_vheap),
+            human_bytes(self.bin_vheap),
+            human_bytes(self.bin_vheap_unused),
+            human_bytes(self.old_bin_vheap),
+            human_bytes(self.old_bin_vheap_unused),
         ]
     }
 
@@ -1673,7 +1715,7 @@ Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\n{:#?}\nInternal Sta
         [
             self.pid.clone(),
             self.name.clone().unwrap_or_default(),
-            format!("{}", self.memory),
+            human_bytes(self.memory),
             format!("{}", self.reductions),
             format!("{}", self.message_queue_length),
         ]
@@ -2186,4 +2228,65 @@ pub struct PortInfo {
     pub input: i64,
     pub output: i64,
     pub queue: i64,
+}
+
+
+#[derive(Debug, Clone, Copy)]
+pub enum ByteConversionError {
+    WordSizeNotSet,
+}
+
+impl fmt::Display for ByteConversionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ByteConversionError::WordSizeNotSet => write!(f, "WORD_SIZE has not been initialized yet"),
+        }
+    }
+}
+
+// given an arbitrary word count, multiply it by the word size and give some reasonable string estimation.
+// human readable heuristics should be to provide GB, MB, KB, or B, depending on what's the most "readable"
+
+pub fn human_bytes(word_count: i64) -> String {
+    convert_to_human_readable_bytes(word_count, None).unwrap()
+}
+
+pub fn convert_to_human_readable_bytes(
+    word_count: i64,
+    precision: Option<usize>,
+) -> Result<String, ByteConversionError> {
+    let word_size_option = WORD_SIZE.get();
+
+    let word_size = match word_size_option {
+        Some(size) => *size as i64,
+        None => return Err(ByteConversionError::WordSizeNotSet),
+    };
+
+    let actual_bytes = word_count * word_size;
+    let precision = precision.unwrap_or(2); // Default to 2 decimal places
+
+    if actual_bytes == 0 {
+        return Ok("0 B".to_string());
+    }
+
+    let units = ["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
+    let base = 1024.0; // Use 1024 for binary prefixes
+
+    let mut size = actual_bytes as f64;
+    let mut unit_index = 0;
+
+    while size >= base && unit_index < units.len() - 1 {
+        size /= base;
+        unit_index += 1;
+    }
+
+    let formatted_size = if unit_index == 0 { // If the unit is bytes
+        format!("{}", actual_bytes) // Format as an integer
+    } else if precision == 0 {
+        format!("{}", size.round())
+    } else {
+        format!("{:.precision$}", size, precision = precision)
+    };
+
+    Ok(format!("{} {}", formatted_size, units[unit_index]))
 }

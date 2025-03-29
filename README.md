@@ -40,10 +40,10 @@ See the [CONTRIBUTING](CONTRIBUTING.md) file for how to help out.
 
 ## TODOs
 ### High Priority
-- [ ] - Parallelize `CrashDump::from_index_map`
+- [x] - Parallelize `CrashDump::from_index_map`
 - [ ] - Add TextView to inspect all output on Stack/Heap/Messages
     - [ ] - Implement additional information (when you press enter, we should be able to go into the children table)
-- [ ] - Human readable byte sizes (should be in bytes instead of words)
+- [x] - Human readable byte sizes (should be in bytes instead of words)
 
 ### Future Work
 - [ ] - Implement Help Page (when you press `?`, should come up with a list of commands)
