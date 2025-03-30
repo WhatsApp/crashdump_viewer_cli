@@ -45,26 +45,23 @@ use crossbeam::channel;
 use dashmap::DashMap;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
-use rayon::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self};
 use std::os::unix::prelude::FileExt;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
 use std::time::Instant;
-use std::sync::OnceLock;
-use std::fmt;
-
 
 use std::thread; // Import rayon traits
 
 pub const MAX_DEPTH_PARSE_DATATYPE: usize = 5;
-const CHUNK_SIZE: usize = 100; // You can adjust this value as needed
 
 static WORD_SIZE: OnceLock<u8> = OnceLock::new();
 
@@ -330,7 +327,7 @@ pub fn string_tag_to_enum(tag: &str) -> Tag {
     tag_enum
 }
 
-fn parse_section(s: &str, id: Option<&str>) -> Result<DumpSection, String> {
+fn parse_section(s: &str, _id: Option<&str>) -> Result<DumpSection, String> {
     let section = GenericSection::from_str(s)?;
     let id = section.id.clone().unwrap_or_else(|| "".to_string());
     let raw_lines = &section.raw_lines;
@@ -339,7 +336,8 @@ fn parse_section(s: &str, id: Option<&str>) -> Result<DumpSection, String> {
     let section = match string_tag_to_enum(section.tag.as_str()) {
         Tag::Preamble => {
             // if the `System version` section has "[64-bit]", word size is 8 bytes, otherwise 4
-            let system_version = data.get("System version")
+            let system_version = data
+                .get("System version")
                 .map(|s| s.clone())
                 .unwrap_or_else(|| "".to_string());
             let word_size_local = if system_version.contains("[64-bit]") {
@@ -347,10 +345,12 @@ fn parse_section(s: &str, id: Option<&str>) -> Result<DumpSection, String> {
             } else {
                 4
             };
-        
+
             // Set the global WORD_SIZE
-            WORD_SIZE.set(word_size_local).expect("WORD_SIZE should only be set once");
-        
+            WORD_SIZE
+                .set(word_size_local)
+                .expect("WORD_SIZE should only be set once");
+
             let preamble = Preamble {
                 version: id,
                 time: raw_lines[0].clone(),
@@ -1587,7 +1587,11 @@ impl ProcInfo {
         text.lines.push(Line::from(vec![
             Span::styled("Old Heap Unused: ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                format!("{} ({})", human_bytes(self.old_heap_unused), self.old_heap_unused),
+                format!(
+                    "{} ({})",
+                    human_bytes(self.old_heap_unused),
+                    self.old_heap_unused
+                ),
                 Style::default().fg(Color::Cyan),
             ),
         ]));
@@ -1603,7 +1607,11 @@ impl ProcInfo {
         text.lines.push(Line::from(vec![
             Span::styled("Old Bin Vheap: ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                format!("{} ({})", human_bytes(self.old_bin_vheap), self.old_bin_vheap),
+                format!(
+                    "{} ({})",
+                    human_bytes(self.old_bin_vheap),
+                    self.old_bin_vheap
+                ),
                 Style::default().fg(Color::Cyan),
             ),
         ]));
@@ -1611,7 +1619,11 @@ impl ProcInfo {
         text.lines.push(Line::from(vec![
             Span::styled("Bin Vheap Unused: ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                format!("{} ({})", human_bytes(self.bin_vheap_unused), self.bin_vheap_unused),
+                format!(
+                    "{} ({})",
+                    human_bytes(self.bin_vheap_unused),
+                    self.bin_vheap_unused
+                ),
                 Style::default().fg(Color::Cyan),
             ),
         ]));
@@ -1619,7 +1631,11 @@ impl ProcInfo {
         text.lines.push(Line::from(vec![
             Span::styled("Old Bin Vheap Unused: ", Style::default().fg(Color::Yellow)),
             Span::styled(
-                format!("{} ({})", human_bytes(self.old_bin_vheap_unused), self.old_bin_vheap_unused),
+                format!(
+                    "{} ({})",
+                    human_bytes(self.old_bin_vheap_unused),
+                    self.old_bin_vheap_unused
+                ),
                 Style::default().fg(Color::Cyan),
             ),
         ]));
@@ -1628,7 +1644,8 @@ impl ProcInfo {
             Span::styled("Memory: ", Style::default().fg(Color::Yellow)),
             Span::styled(
                 format!("{} ({})", human_bytes(self.memory), self.memory),
-                Style::default().fg(Color::Cyan)),
+                Style::default().fg(Color::Cyan),
+            ),
         ]));
 
         text.lines.push(Line::from(vec![
@@ -1659,27 +1676,27 @@ impl ProcInfo {
         format!(
             "Pid: {}\nState: {}\nName: {:#?}\nSpawned As: {:#?}\nSpawned By: {:#?}\nMessage Queue Length: {}\nNumber of Heap Fragments: {}\nHeap Fragment Data: {}\nLink List: {:#?}\nReductions: {}\nStack Heap: {}\nOld Heap: {}\nHeap Unused: {}\nOld Heap Unused: {}\nBin Vheap: {}\nOld Bin Vheap: {}\nBin Vheap
 Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\n{:#?}\nInternal State: {:#?}",
-            self.pid, 
-            self.state, 
-            self.name, 
-            self.spawned_as, 
-            self.spawned_by, 
-            self.message_queue_length, 
-            self.number_of_heap_fragments, 
-            self.heap_fragment_data, 
-            self.link_list, 
-            self.reductions, 
-            self.stack_heap, 
+            self.pid,
+            self.state,
+            self.name,
+            self.spawned_as,
+            self.spawned_by,
+            self.message_queue_length,
+            self.number_of_heap_fragments,
+            self.heap_fragment_data,
+            self.link_list,
+            self.reductions,
+            self.stack_heap,
             self.old_heap,
-            self.heap_unused, 
-            self.old_heap_unused, 
-            self.bin_vheap, 
+            self.heap_unused,
+            self.old_heap_unused,
+            self.bin_vheap,
             self.old_bin_vheap,
-            self.bin_vheap_unused, 
-            self.old_bin_vheap_unused, 
-            self.memory, 
+            self.bin_vheap_unused,
+            self.old_bin_vheap_unused,
+            self.memory,
             self.arity,
-            self.program_counter, 
+            self.program_counter,
             self.internal_state
         )
     }
@@ -1702,7 +1719,7 @@ Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\n{:#?}\nInternal Sta
             format!("{}", self.old_bin_vheap),
             self.pid.clone(),
             self.name.clone().unwrap_or_default(),
-            human_bytes( self.memory),
+            human_bytes(self.memory),
             human_bytes(self.bin_vheap + self.old_bin_vheap),
             human_bytes(self.bin_vheap),
             human_bytes(self.bin_vheap_unused),
@@ -2230,7 +2247,6 @@ pub struct PortInfo {
     pub queue: i64,
 }
 
-
 #[derive(Debug, Clone, Copy)]
 pub enum ByteConversionError {
     WordSizeNotSet,
@@ -2239,7 +2255,9 @@ pub enum ByteConversionError {
 impl fmt::Display for ByteConversionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ByteConversionError::WordSizeNotSet => write!(f, "WORD_SIZE has not been initialized yet"),
+            ByteConversionError::WordSizeNotSet => {
+                write!(f, "WORD_SIZE has not been initialized yet")
+            }
         }
     }
 }
@@ -2280,7 +2298,8 @@ pub fn convert_to_human_readable_bytes(
         unit_index += 1;
     }
 
-    let formatted_size = if unit_index == 0 { // If the unit is bytes
+    let formatted_size = if unit_index == 0 {
+        // If the unit is bytes
         format!("{}", actual_bytes) // Format as an integer
     } else if precision == 0 {
         format!("{}", size.round())

@@ -17,19 +17,16 @@
 //! information from the crash dump.
 
 use crate::parser::*;
+use dashmap::DashMap;
 use grep::{
     regex::RegexMatcher,
     searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch},
 };
-// use rayon::prelude::*;
-use dashmap::DashMap;
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span, Text};
+use ratatui::text::Text;
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fs::File;
 use std::fs::OpenOptions;
-use std::io;
+use std::io::{self};
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -81,8 +78,6 @@ pub struct CDParser {
     //file: File,
     // mmap: Mmap,
     filepath: PathBuf,
-    filename: String,
-    index: Vec<String>,
 }
 
 impl CDParser {
@@ -99,14 +94,10 @@ impl CDParser {
         let (filepath, filename) = Self::split_path_and_filename(filepath)?;
         let realpath = filepath.join(&filename);
 
-        // TODO: add mmap support
-
         Ok(CDParser {
             //file,
             // mmap,
             filepath: realpath,
-            filename,
-            index: Vec::new(),
         })
     }
 

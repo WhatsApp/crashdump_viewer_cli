@@ -15,14 +15,15 @@
 use crate::parser::*;
 use ratatui::{
     buffer::Buffer,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect, Size},
     style::{palette::tailwind, Color, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{
         Block, Cell, HighlightSpacing, Paragraph, Row, StatefulWidget, Table, TableState, Tabs,
-        Widget, Wrap,
+        Widget, Wrap
     },
 };
+use tui_scrollview::{ScrollView, ScrollViewState};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::error;
@@ -49,9 +50,14 @@ pub struct App<'a> {
     pub index_map: IndexMap,
     pub ancestor_map: HashMap<String, Vec<String>>,
 
+
+
     /// process information list
     pub tab_lists: HashMap<SelectedTab, Vec<String>>,
     pub tab_rows: HashMap<SelectedTab, Vec<Row<'a>>>,
+
+    pub inspecting_pid: String,
+    pub inspect_scroll_state: ScrollViewState,
 
     pub table_states: HashMap<SelectedTab, TableState>,
 
@@ -89,6 +95,8 @@ pub enum SelectedTab {
     ProcessGroup,
     #[strum(to_string = "Process Info")]
     Process,
+    #[strum(to_string = "Inspector")]
+    Inspect,
 }
 
 impl Default for App<'_> {
@@ -111,6 +119,8 @@ impl Default for App<'_> {
             process_view_state: ProcessViewState::default(),
             process_view_table: Table::default(),
             footer_text: HashMap::new(),
+            inspecting_pid: "".to_string(),
+            inspect_scroll_state: ScrollViewState::default(),
         }
     }
 }
@@ -310,7 +320,8 @@ impl App<'_> {
         .highlight_spacing(HighlightSpacing::Always)
         .block(Block::bordered().title(SelectedTab::Process.to_string()));
 
-        ret.footer_text.insert(SelectedTab::Process, "Press S for Stack, H for Heap, M for Message Queue | < > to change tabs | Press q to quit".to_string());
+        ret.footer_text.insert(SelectedTab::Process, "Press S for Stack, H for Heap, M for Message Queue | I to inspect contents |  < > to change tabs | Press q to quit".to_string());
+        ret.footer_text.insert(SelectedTab::Inspect, "Press I to return to process info  |  < > to change tabs | q to quit".to_string());
 
         // if let Some(state) = ret.table_states.get_mut(&SelectedTab::Index) {
         //     if !ret.tab_lists[&SelectedTab::Index].is_empty() {
@@ -329,6 +340,9 @@ impl App<'_> {
                 state.select(Some(0));
             }
         }
+
+
+        ret.inspect_scroll_state = ScrollViewState::default();
 
         let elapsed = now.elapsed();
         println!("Building everything took: {:.2?}", elapsed);
@@ -381,6 +395,16 @@ impl App<'_> {
             .divider(" ")
             .render(area, buf);
     }
+
+    pub fn get_selected_pid(&self) -> String {
+        if self.selected_tab == SelectedTab::Process {
+            let process_table_state = self.table_states.get(&SelectedTab::Process).unwrap();
+            let selected_item = process_table_state.selected().unwrap_or(0);
+            self.tab_lists[&SelectedTab::Process][selected_item].clone()
+        } else {
+            String::new()
+        }
+    }
 }
 
 impl Widget for &mut App<'_> {
@@ -401,6 +425,7 @@ impl Widget for &mut App<'_> {
             SelectedTab::ProcessGroup => self
                 .selected_tab
                 .render_process_group(inner_area, buf, self),
+            SelectedTab::Inspect => self.selected_tab.render_inspect(inner_area, buf, self),
         }
         let footer_text = self
             .footer_text
@@ -559,12 +584,21 @@ impl SelectedTab {
         };
 
         let (inspect_info_title, inspect_info_text) = match app.process_view_state {
-            ProcessViewState::Stack => ("Decoded Stack", app.get_stack_info(selected_pid).unwrap()),
-            ProcessViewState::Heap => ("Decoded Heap", app.get_heap_info(selected_pid).unwrap()),
-            ProcessViewState::MessageQueue => (
+            ProcessViewState::Stack => {
+                app.inspecting_pid = selected_pid.clone();
+                ("Decoded Stack", app.get_stack_info(selected_pid).unwrap())
+            }
+            ProcessViewState::Heap => {
+                app.inspecting_pid = selected_pid.clone();
+
+                ("Decoded Heap", app.get_heap_info(selected_pid).unwrap())
+            }
+            ProcessViewState::MessageQueue => {
+                app.inspecting_pid = selected_pid.clone();
+                (
                 "Decoded Message Queue",
                 app.get_message_queue_info(selected_pid).unwrap(),
-            ),
+            )}
         };
 
         //println!("heap info text: {}", heap_info_text);
@@ -616,10 +650,6 @@ impl SelectedTab {
                         active_proc_info.format_as_ratatui_text()
                     }
                     InfoOrIndex::Index(_) => {
-                        eprintln!(
-                            "Unexpected InfoOrIndex::Index for selected pid: {:?}",
-                            selected_pid
-                        );
                         Text::raw(format!("Index for pid: {:?}", selected_pid).to_string())
                     }
                 };
@@ -650,7 +680,6 @@ impl SelectedTab {
                             }
                             None => {
                                 // Handle the case where child_pid is not found in processes
-                                eprintln!("Child process info not found for pid: {:?}", child_pid);
                                 Row::new(vec![format!("Info not found: {:?}", child_pid)])
                             }
                         }
@@ -697,12 +726,50 @@ impl SelectedTab {
         );
     }
 
+    fn render_inspect(self, area: Rect, buf: &mut Buffer, app: &mut App) {    
+        let width = if buf.area.height < 70 {
+            buf.area.width - 1
+        } else {
+            buf.area.width
+        };
+        let mut scroll_view = ScrollView::new(Size::new(width, 70));
+
+        let inspect_info_text;
+        let inspect_info_title;
+        {
+            let (t1, t2) = match app.process_view_state {
+                ProcessViewState::Stack => 
+                    {
+                        ("Decoded Stack", app.get_stack_info(&app.inspecting_pid).unwrap())
+                    },
+                ProcessViewState::Heap => ("Decoded Heap", app.get_heap_info(&app.inspecting_pid).unwrap()),
+                ProcessViewState::MessageQueue => (
+                    "Decoded Message Queue",
+                    app.get_message_queue_info(&app.inspecting_pid).unwrap(),
+                ),
+            };
+            inspect_info_title = t1;
+            inspect_info_text = t2.clone();
+        }
+
+        let proc_info = Paragraph::new(inspect_info_text)
+        .block(Block::bordered().title(inspect_info_title))
+        .style(Style::default().fg(Color::White))
+        .wrap(Wrap { trim: false })
+        .alignment(Alignment::Left);
+
+    
+        proc_info.render(area, &mut scroll_view.buf_mut());
+        scroll_view.render(area, buf, &mut app.inspect_scroll_state);
+    }
+
     const fn palette(self) -> tailwind::Palette {
         match self {
             Self::General => tailwind::BLUE,
             //Self::Index => tailwind::TEAL,
             Self::Process => tailwind::EMERALD,
             Self::ProcessGroup => tailwind::INDIGO,
+            Self::Inspect => tailwind::PURPLE,
         }
     }
 }
@@ -714,5 +781,3 @@ fn render_title(area: Rect, buf: &mut Buffer) {
 fn render_footer(footer_text: &str, area: Rect, buf: &mut Buffer) {
     Line::raw(footer_text).centered().render(area, buf);
 }
-
-

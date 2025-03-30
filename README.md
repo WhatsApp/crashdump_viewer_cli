@@ -41,8 +41,8 @@ See the [CONTRIBUTING](CONTRIBUTING.md) file for how to help out.
 ## TODOs
 ### High Priority
 - [x] - Parallelize `CrashDump::from_index_map`
-- [ ] - Add TextView to inspect all output on Stack/Heap/Messages
-    - [ ] - Implement additional information (when you press enter, we should be able to go into the children table)
+- [x] - Add TextView to inspect all output on Stack/Heap/Messages
+    - [x] - Implement additional information (when you press enter, we should be able to go into the children table)
 - [x] - Human readable byte sizes (should be in bytes instead of words)
 
 ### Future Work
