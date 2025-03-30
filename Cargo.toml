@@ -2,6 +2,7 @@
 name = "crashdump_parser_cli"
 version = "0.1.0"
 authors = ["Peixian Wang <pxw@meta.com>"]
+description = "A CLI tool to parse Erlang crashdumps."
 license = "MIT"
 edition = "2021"
 
