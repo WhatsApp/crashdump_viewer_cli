@@ -1,9 +1,9 @@
 [package]
 name = "crashdump_parser_cli"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Peixian Wang <pxw@meta.com>"]
 description = "A CLI tool to parse Erlang crashdumps."
-repository = "https://https://github.com/WhatsApp/crashdump_viewer_cli/"
+repository = "https://github.com/WhatsApp/crashdump_viewer_cli/"
 readme = "README.md"
 license = "Apache-2.0"
 keywords = ["erlang", "ratatui"]
