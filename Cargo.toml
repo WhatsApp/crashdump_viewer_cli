@@ -1,6 +1,6 @@
 [package]
-name = "crashdump_parser_cli"
-version = "0.3.0"
+name = "crashdump_viewer_cli"
+version = "0.2.0"
 authors = ["Peixian Wang <pxw@meta.com>"]
 description = "A CLI tool to parse Erlang crashdumps."
 repository = "https://github.com/WhatsApp/crashdump_viewer_cli/"
@@ -9,7 +9,12 @@ license = "Apache-2.0"
 keywords = ["erlang", "ratatui"]
 license-file = "LICENSE"
 edition = "2021"
-
+[lib]
+name = "crashdump_viewer_lib"
+path = "src/lib.rs"
+[[bin]]
+name = "crashdump_viewer_cli"
+path = "src/main.rs"
 [dependencies]
 crossterm = { version = "0.28.1", features = ["event-stream"] }
 futures = "0.3.31"
