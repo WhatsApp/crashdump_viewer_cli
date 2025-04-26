@@ -1872,20 +1872,20 @@ impl GroupInfo {
     pub fn format(&self) -> String {
         format!(
             "{}\t{}\t{}\t{}",
-            self.total_memory_size,
             self.pid,
             self.name,
+            self.total_memory_size,
             self.children.len()
         )
     }
     pub fn headers() -> [&'static str; 4] {
-        ["Total Memory Size", "Pid", "Name", "Children Count"]
+        [ "Pid", "Name", "Total Memory Size", "Children Count"]
     }
     pub fn ref_array(&self) -> [String; 4] {
         [
-            format!("{}", self.total_memory_size),
             self.pid.clone(),
             self.name.clone(),
+            format!("{}", self.total_memory_size),
             format!("{}", self.children.len()),
         ]
     }
