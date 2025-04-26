@@ -12,77 +12,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use serde::Deserialize;
 use ratatui::style::Color;
-use std::fs;
 
-// default color TOML
-/*
-[general]
-background = "Blue"
-highlight = "Cyan"
-header = "Red"
-
-[process]
-background = "Green"
-highlight = "Yellow"
-header = "Red"
-
-[process_group]
-background = "Purple"
-highlight = "Magenta"
-header = "Red"
-
-[inspect]
-background = "Orange"
-highlight = "Brown"
-header = "Red"
-
-[common]
-default_text = "White"
-highlight_text = "Blue"
-header_text = "Red"
-header_background = "DarkGray"
-highlight_background = "LightGray"
-error_text = "Red"
-warning_text = "Yellow"
-info_text = "Cyan"
-*/
-
-#[derive(Deserialize, Clone)]
-struct ColorConfig {
-    general: ColorScheme,
-    process: ColorScheme,
-    process_group: ColorScheme,
-    inspect: ColorScheme,
-    common: CommonColors,
+// Kept as CommonColors to match app.rs for now.
+#[derive(Clone, Debug)] // Added Debug
+pub struct CommonColors {
+    pub default_text: Color,
+    pub highlight_text: Color, // e.g., for selected items text
+    pub header_text: Color,
+    pub header_background: Color,
+    pub highlight_background: Color, // e.g., for selected items background
+    pub error_text: Color,
+    pub warning_text: Color,
+    pub info_text: Color,
+    // Add other commonly used colors if needed
+    pub border_color: Color,
+    pub title_color: Color,
 }
 
-#[derive(Deserialize, Clone)]
-struct ColorScheme {
-    text: Color,
-    background: Color,
-    highlight: Color,
-    header: Color,
-}
-
-#[derive(Deserialize, Clone)]
-struct CommonColors {
-    default_text: Color,
-    highlight_text: Color,
-    header_text: Color,
-    header_background: Color,
-    highlight_background: Color,
-    error_text: Color,
-    warning_text: Color,
-    info_text: Color,
-}
-
-
-impl ColorConfig {
-    fn load_from_file(file_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let config_data = fs::read_to_string(file_path)?;
-        let config: ColorConfig = toml::from_str(&config_data)?;
-        Ok(config)
+impl Default for CommonColors {
+    fn default() -> Self {
+        Self {
+            // Using standard Ratatui colors for defaults
+            default_text: Color::White,
+            highlight_text: Color::Yellow,
+            header_text: Color::White,
+            header_background: Color::Blue,
+            highlight_background: Color::DarkGray,
+            error_text: Color::Red,
+            warning_text: Color::Yellow,
+            info_text: Color::Cyan,
+            border_color: Color::Gray,
+            title_color: Color::White,
+        }
     }
 }

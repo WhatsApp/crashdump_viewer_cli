@@ -1702,9 +1702,9 @@ Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\n{:#?}\nInternal Sta
     }
     pub fn headers() -> [&'static str; 9] {
         [
-            "OldBinVHeap",
             "Pid",
             "Name",
+            "Message Queue Length",
             "Memory",
             "TotalBinVHeap",
             "BinVHeap",
@@ -1716,9 +1716,9 @@ Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\n{:#?}\nInternal Sta
 
     pub fn ref_array(&self) -> [String; 9] {
         [
-            format!("{}", self.old_bin_vheap),
             self.pid.clone(),
             self.name.clone().unwrap_or_default(),
+            format!("{}", self.message_queue_length),
             human_bytes(self.memory),
             human_bytes(self.bin_vheap + self.old_bin_vheap),
             human_bytes(self.bin_vheap),

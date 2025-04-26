@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::config::CommonColors;
 use crate::parser::*;
 use ratatui::{
     buffer::Buffer,
@@ -20,15 +21,15 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{
         Block, Cell, HighlightSpacing, Paragraph, Row, StatefulWidget, Table, TableState, Tabs,
-        Widget, Wrap
+        Widget, Wrap,
     },
 };
-use tui_scrollview::{ScrollView, ScrollViewState};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::error;
 use std::io;
 use std::time::Instant;
+use tui_scrollview::{ScrollView, ScrollViewState};
 
 use strum::IntoEnumIterator;
 use strum_macros::{Display, EnumIter, FromRepr};
@@ -50,8 +51,6 @@ pub struct App<'a> {
     pub index_map: IndexMap,
     pub ancestor_map: HashMap<String, Vec<String>>,
 
-
-
     /// process information list
     pub tab_lists: HashMap<SelectedTab, Vec<String>>,
     pub tab_rows: HashMap<SelectedTab, Vec<Row<'a>>>,
@@ -65,8 +64,13 @@ pub struct App<'a> {
 
     pub process_view_table: Table<'a>,
     pub process_view_state: ProcessViewState,
+    pub process_sort_column: ProcessSortColumn,
+    pub process_sort_direction: SortDirection,
+    pub process_readonly_view: Option<dashmap::ReadOnlyView<String, InfoOrIndex<ProcInfo>>>,
 
     pub footer_text: HashMap<SelectedTab, String>,
+
+    pub colors: CommonColors,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +103,25 @@ pub enum SelectedTab {
     Inspect,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessSortColumn {
+    Pid = 0,
+    Name = 1,
+    MessageQueueLength = 2,
+    Memory = 3,
+    TotalBinVHeap = 4,
+    BinVHeap = 5,
+    BinVHeapUnused = 6,
+    OldBinVHeap = 7,
+    OldBinVHeapUnused = 8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDirection {
+    Ascending,
+    Descending,
+}
+
 impl Default for App<'_> {
     fn default() -> Self {
         Self {
@@ -118,9 +141,13 @@ impl Default for App<'_> {
             process_group_table: Table::default(),
             process_view_state: ProcessViewState::default(),
             process_view_table: Table::default(),
+            process_sort_column: ProcessSortColumn::BinVHeap,
+            process_sort_direction: SortDirection::Descending,
+            process_readonly_view: None,
             footer_text: HashMap::new(),
             inspecting_pid: "".to_string(),
             inspect_scroll_state: ScrollViewState::default(),
+            colors: CommonColors::default(),
         }
     }
 }
@@ -129,147 +156,102 @@ impl App<'_> {
     /// Constructs a new instance of [`App`].
     pub fn new(filepath: String) -> Self {
         let now = Instant::now();
-
         let parser = parser::CDParser::new(&filepath).unwrap();
-
         let mut ret = Self::default();
         ret.filepath = filepath.clone();
 
-        ret.process_view_state = ProcessViewState::default();
-
-        // store the index
-        // let idx_str = parser::CDParser::format_index(&idx);
-        // ret.tab_lists.get_mut(&SelectedTab::Index).map(|val| {
-        //     *val = idx_str;
-        // });
-
-        
         ret.index_map = parser.build_index().unwrap();
-        ret.crash_dump = parser.parse(&ret.index_map).unwrap();   
-
-        //println!("heap addrs: {:?}", ret.crash_dump.all_heap_addresses);
-        //println!("binaries: {:?}", ret.crash_dump.visited_binaries);
+        ret.crash_dump = parser.parse(&ret.index_map).unwrap();
 
         ret.ancestor_map = parser::CDParser::create_descendants_table(&ret.crash_dump.processes);
-        // for every ancestor:<children> mapping, we need to calculate the GroupInfo for each one if the pid exists
-        let group_info =
+        ret.crash_dump.group_info_map =
             parser::CDParser::calculate_group_info(&ret.ancestor_map, &ret.crash_dump.processes);
-        ret.crash_dump.group_info_map = group_info;
-        //    let all_processes = &mut ret.crash_dump.processes;
 
-        // set the process list to be a tuple of [pid, name, heap_size, msgq_len]
-        // we need to be able to sort an array based on the msgqlength as well
+        let read_only_processes = ret.crash_dump.processes.clone().into_read_only();
+        ret.process_readonly_view = Some(read_only_processes);
 
-        //////////////// Individual Process View
-        // let mut sorted_keys = ret
-        //     .crash_dump
-        //     .processes
-        //     .iter()
-        //     .collect::<Vec<(&String, &InfoOrIndex<ProcInfo>)>>();
-        // sorted_keys.sort_by(|a, b| match (a.1, b.1) {
+        ret.sort_and_update_process_table();
+
+        // colorings for the tables
+        let selected_col_style = Style::default().fg(ret.colors.default_text);
+        let selected_cell_style = Style::default().fg(ret.colors.default_text);
+        let header_style = Style::default()
+            .fg(ret.colors.default_text)
+            .bg(ret.colors.header_background);
+        let selected_row_style = Style::default()
+            .fg(ret.colors.default_text)
+            .bg(ret.colors.highlight_background);
+
+        // let mut sorted_keys: Vec<(&String, &InfoOrIndex<ProcInfo>)> =
+        //     ret.process_readonly_view.as_ref().unwrap().iter().collect();
+        // sorted_keys.par_sort_by(|a, b| match (a.1, b.1) {
         //     (InfoOrIndex::Info(proc_info_a), InfoOrIndex::Info(proc_info_b)) => {
-        //         proc_info_b.memory.cmp(&proc_info_a.memory)
+        //         proc_info_b.bin_vheap.cmp(&proc_info_a.bin_vheap)
         //     }
         //     _ => unreachable!(),
         // });
-
-        // let sorted_key_list = sorted_keys
-        //     .into_iter()
+        // let sorted_key_list: Vec<String> = sorted_keys
+        //     .into_par_iter()
         //     .map(|(key, _)| key.clone())
-        //     .collect::<Vec<String>>();
-
+        //     .collect();
         // ret.tab_lists.get_mut(&SelectedTab::Process).map(|val| {
         //     *val = sorted_key_list;
         // });
+        //
 
         // let process_rows: Vec<Row> = ret.tab_lists[&SelectedTab::Process]
-        //     .iter()
-        //     .map(|pid| match ret.crash_dump.processes.get(pid).unwrap() {
-        //         InfoOrIndex::Info(proc_info) => {
-        //             let item = proc_info.ref_array();
-        //             Row::new(item)
-        //         }
-        //         _ => {
-        //             unreachable!();
+        //     .par_iter()
+        //     .map(|pid| {
+        //         match ret.crash_dump.processes.get(pid) {
+        //             Some(process_ref) => {
+        //                 match *process_ref.value() {
+        //                     // Dereference the Ref to access the inner value
+        //                     InfoOrIndex::Info(ref proc_info) => {
+        //                         let item = proc_info.ref_array();
+        //                         Row::new(item)
+        //                     }
+        //                     _ => {
+        //                         // Handle the Index case if it's possible in this context
+        //                         Row::new(vec![format!("Unexpected Index for pid: {:?}", pid)])
+        //                         // Or handle differently
+        //                     }
+        //                 }
+        //             }
+        //             None => {
+        //                 // Handle the case where the PID is not found in the DashMap
+        //                 Row::new(vec![format!("Process not found: {:?}", pid)]) // Or handle differently
+        //             }
         //         }
         //     })
         //     .collect();
 
-        let read_only_processes = ret.crash_dump.processes.clone().into_read_only();
-        let mut sorted_keys: Vec<(&String, &InfoOrIndex<ProcInfo>)> =
-            read_only_processes.iter().collect();
-        sorted_keys.par_sort_by(|a, b| match (a.1, b.1) {
-            (InfoOrIndex::Info(proc_info_a), InfoOrIndex::Info(proc_info_b)) => {
-                proc_info_b.bin_vheap.cmp(&proc_info_a.bin_vheap)
-            }
-            _ => unreachable!(),
-        });
-        let sorted_key_list: Vec<String> = sorted_keys
-            .into_par_iter() // Use parallel iterator
-            .map(|(key, _)| key.clone())
-            .collect();
-        ret.tab_lists.get_mut(&SelectedTab::Process).map(|val| {
-            *val = sorted_key_list;
-        });
+        // let process_header = ProcInfo::headers()
+        //     .into_iter()
+        //     .map(Cell::from)
+        //     .collect::<Row>()
+        //     .style(header_style)
+        //     .height(1);
 
-        let process_rows: Vec<Row> = ret.tab_lists[&SelectedTab::Process]
-            .par_iter() // Use parallel iterator
-            .map(|pid| {
-                match ret.crash_dump.processes.get(pid) {
-                    Some(process_ref) => {
-                        match *process_ref.value() {
-                            // Dereference the Ref to access the inner value
-                            InfoOrIndex::Info(ref proc_info) => {
-                                let item = proc_info.ref_array();
-                                Row::new(item)
-                            }
-                            _ => {
-                                // Handle the Index case if it's possible in this context
-                                Row::new(vec![format!("Unexpected Index for pid: {:?}", pid)])
-                                // Or handle differently
-                            }
-                        }
-                    }
-                    None => {
-                        // Handle the case where the PID is not found in the DashMap
-                        Row::new(vec![format!("Process not found: {:?}", pid)]) // Or handle differently
-                    }
-                }
-            })
-            .collect();
-
-        let selected_row_style = Style::default().fg(Color::White).bg(Color::Blue);
-        let selected_col_style = Style::default().fg(Color::White);
-        let selected_cell_style = Style::default().fg(Color::White);
-        let header_style = Style::default().fg(Color::White).bg(Color::Red);
-
-        let process_header = ProcInfo::headers()
-            .into_iter()
-            .map(Cell::from)
-            .collect::<Row>()
-            .style(header_style)
-            .height(1);
-
-        ret.process_view_table = Table::new(
-            process_rows,
-            [
-                Constraint::Length(15),
-                Constraint::Length(25),
-                Constraint::Length(25),
-                Constraint::Length(25),
-                Constraint::Length(25),
-                Constraint::Length(25),
-                Constraint::Length(25),
-                Constraint::Length(25),
-                Constraint::Length(25),
-            ],
-        )
-        .header(process_header)
-        .row_highlight_style(selected_row_style)
-        .column_highlight_style(selected_col_style)
-        .cell_highlight_style(selected_cell_style)
-        .highlight_spacing(HighlightSpacing::Always)
-        .block(Block::bordered().title(SelectedTab::Process.to_string()));
+        // ret.process_view_table = Table::new(
+        //     process_rows,
+        //     [
+        //         Constraint::Length(25),
+        //         Constraint::Length(25),
+        //         Constraint::Length(25),
+        //         Constraint::Length(25),
+        //         Constraint::Length(25),
+        //         Constraint::Length(25),
+        //         Constraint::Length(25),
+        //         Constraint::Length(25),
+        //         Constraint::Length(25),
+        //     ],
+        // )
+        // .header(process_header)
+        // .row_highlight_style(selected_row_style)
+        // .column_highlight_style(selected_col_style)
+        // .cell_highlight_style(selected_cell_style)
+        // .highlight_spacing(HighlightSpacing::Always)
+        // .block(Block::bordered().title(SelectedTab::Process.to_string()));
 
         ///////// Process Group Info
 
@@ -321,13 +303,10 @@ impl App<'_> {
         .block(Block::bordered().title(SelectedTab::Process.to_string()));
 
         ret.footer_text.insert(SelectedTab::Process, "Press S for Stack, H for Heap, M for Message Queue | I to inspect contents |  < > to change tabs | Press q to quit".to_string());
-        ret.footer_text.insert(SelectedTab::Inspect, "Press I to return to process info  |  < > to change tabs | q to quit".to_string());
-
-        // if let Some(state) = ret.table_states.get_mut(&SelectedTab::Index) {
-        //     if !ret.tab_lists[&SelectedTab::Index].is_empty() {
-        //         state.select(Some(0));
-        //     }
-        // }
+        ret.footer_text.insert(
+            SelectedTab::Inspect,
+            "Press I to return to process info  |  < > to change tabs | q to quit".to_string(),
+        );
 
         if let Some(state) = ret.table_states.get_mut(&SelectedTab::Process) {
             if !ret.tab_lists[&SelectedTab::Process].is_empty() {
@@ -341,13 +320,151 @@ impl App<'_> {
             }
         }
 
-
         ret.inspect_scroll_state = ScrollViewState::default();
 
         let elapsed = now.elapsed();
         println!("Building everything took: {:.2?}", elapsed);
 
         ret
+    }
+
+    pub fn sort_and_update_process_table(&mut self) {
+        let column = self.process_sort_column;
+        let direction = self.process_sort_direction;
+        let processes_map = &self.crash_dump.processes;
+
+        let mut pids_to_sort: Vec<(&String, &InfoOrIndex<ProcInfo>)> = self
+            .process_readonly_view
+            .as_ref()
+            .unwrap()
+            .iter()
+            .collect();
+
+        pids_to_sort.par_sort_by(|a, b| match (a.1, b.1) {
+            (InfoOrIndex::Info(proc_a), InfoOrIndex::Info(proc_b)) => match direction {
+                SortDirection::Ascending => match column {
+                    ProcessSortColumn::Pid => proc_a.pid.cmp(&proc_b.pid),
+                    ProcessSortColumn::Name => proc_a.name.cmp(&proc_b.name),
+                    ProcessSortColumn::Memory => proc_a.memory.cmp(&proc_b.memory),
+                    ProcessSortColumn::TotalBinVHeap => {
+                        proc_a.total_bin_vheap.cmp(&proc_b.total_bin_vheap)
+                    }
+                    ProcessSortColumn::BinVHeap => proc_a.bin_vheap.cmp(&proc_b.bin_vheap),
+                    ProcessSortColumn::BinVHeapUnused => {
+                        proc_a.bin_vheap_unused.cmp(&proc_b.bin_vheap_unused)
+                    }
+                    ProcessSortColumn::OldBinVHeap => {
+                        proc_a.old_bin_vheap.cmp(&proc_b.old_bin_vheap)
+                    }
+                    ProcessSortColumn::OldBinVHeapUnused => proc_a
+                        .old_bin_vheap_unused
+                        .cmp(&proc_b.old_bin_vheap_unused),
+                    ProcessSortColumn::MessageQueueLength => proc_a
+                        .message_queue_length
+                        .cmp(&proc_b.message_queue_length),
+                },
+                // This is very gross, but it's very fast
+                SortDirection::Descending => match column {
+                    ProcessSortColumn::Pid => proc_b.pid.cmp(&proc_a.pid),
+                    ProcessSortColumn::Name => proc_b.name.cmp(&proc_a.name),
+                    ProcessSortColumn::Memory => proc_b.memory.cmp(&proc_a.memory),
+                    ProcessSortColumn::TotalBinVHeap => {
+                        proc_b.total_bin_vheap.cmp(&proc_a.total_bin_vheap)
+                    }
+                    ProcessSortColumn::BinVHeap => proc_b.bin_vheap.cmp(&proc_a.bin_vheap),
+                    ProcessSortColumn::BinVHeapUnused => {
+                        proc_b.bin_vheap_unused.cmp(&proc_a.bin_vheap_unused)
+                    }
+                    ProcessSortColumn::OldBinVHeap => {
+                        proc_b.old_bin_vheap.cmp(&proc_a.old_bin_vheap)
+                    }
+                    ProcessSortColumn::OldBinVHeapUnused => proc_b
+                        .old_bin_vheap_unused
+                        .cmp(&proc_a.old_bin_vheap_unused),
+                    ProcessSortColumn::MessageQueueLength => proc_b
+                        .message_queue_length
+                        .cmp(&proc_a.message_queue_length),
+                },
+            },
+            _ => unreachable!(),
+        });
+
+        let sorted_key_list: Vec<String> = pids_to_sort
+            .into_par_iter()
+            .map(|(key, _)| key.clone())
+            .collect();
+        self.tab_lists.get_mut(&SelectedTab::Process).map(|val| {
+            *val = sorted_key_list;
+        });
+
+        let process_rows: Vec<Row> = self.tab_lists[&SelectedTab::Process]
+            .par_iter()
+            .map(|pid| {
+                match processes_map.get(pid) {
+                    Some(process_ref) => match *process_ref.value() {
+                        InfoOrIndex::Info(ref proc_info) => {
+                            // Use the updated ref_array which has 8 elements
+                            Row::new(proc_info.ref_array())
+                        }
+                        _ => Row::new(vec![format!("Index: {}", pid)]),
+                    },
+                    None => Row::new(vec![format!("Not Found: {}", pid)]),
+                }
+            })
+            .collect();
+
+        let selected_row_style = Style::default()
+            .fg(self.colors.highlight_text)
+            .bg(self.colors.highlight_background);
+        let header_style = Style::default()
+            .fg(self.colors.header_text)
+            .bg(self.colors.header_background);
+
+        // --- Update Header with Sort Indicator ---
+        // Uses the new ProcInfo::headers() which has 9 elements
+        let header_cells = ProcInfo::headers()
+            .iter()
+            .enumerate()
+            .map(|(i, &h)| {
+                let indicator = if i == self.process_sort_column as usize {
+                    match self.process_sort_direction {
+                        SortDirection::Ascending => " ▲",
+                        SortDirection::Descending => " ▼",
+                    }
+                } else {
+                    ""
+                };
+                Cell::from(format!("{}{}", h, indicator))
+            })
+            .collect::<Vec<_>>();
+
+        let process_header = Row::new(header_cells).style(header_style).height(1);
+        // --- End Header Update ---
+
+        // Recreate the table with new rows and header
+        // ----- Update constraints to match 8 columns -----
+        let constraints = vec![
+            Constraint::Length(25),
+            Constraint::Length(25),
+            Constraint::Length(25),
+            Constraint::Length(25),
+            Constraint::Length(25),
+            Constraint::Length(25),
+            Constraint::Length(25),
+            Constraint::Length(25),
+            Constraint::Length(25),
+        ];
+        // ----- End constraints update -----
+
+        self.process_view_table = Table::new(process_rows, constraints) // Use updated constraints
+            .header(process_header)
+            .row_highlight_style(selected_row_style)
+            .highlight_spacing(HighlightSpacing::Always)
+            .block(Block::bordered().title(SelectedTab::Process.to_string()));
+
+        if let Some(state) = self.table_states.get_mut(&SelectedTab::Process) {
+            state.select(Some(0));
+        }
     }
 
     /// Handles the tick event of the terminal.
@@ -471,34 +588,56 @@ impl SelectedTab {
         // Split the preamble text into lines
         let preamble_lines: Vec<Line> = preamble_text
             .lines()
-            .map(|line| Line::from(Span::styled(line, Style::default().fg(Color::White))))
+            .map(|line| {
+                Line::from(Span::styled(
+                    line,
+                    Style::default().fg(app.colors.default_text),
+                ))
+            })
             .collect();
 
         // Split the memory information text into lines
         let memory_information_lines: Vec<Line> = memory_info_text
             .lines()
-            .map(|line| Line::from(Span::styled(line, Style::default().fg(Color::White))))
+            .map(|line| {
+                Line::from(Span::styled(
+                    line,
+                    Style::default().fg(app.colors.default_text),
+                ))
+            })
             .collect();
 
         // Add a header for memory information
         let memory_information_header = Line::from(vec![
-            Span::styled("Memory Information:", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "Memory Information:",
+                Style::default().fg(app.colors.header_text),
+            ),
             Span::raw("\n"),
         ]);
 
         let process_count = Line::from(vec![
-            Span::styled("Process Count: ", Style::default().fg(Color::Cyan)),
-            Span::styled(process_count.to_string(), Style::default().fg(Color::White)),
+            Span::styled("Process Count: ", Style::default().fg(app.colors.info_text)),
+            Span::styled(
+                process_count.to_string(),
+                Style::default().fg(app.colors.default_text),
+            ),
         ]);
 
         let ets_count = Line::from(vec![
-            Span::styled("ETS Tables: ", Style::default().fg(Color::Cyan)),
-            Span::styled(ets_count.to_string(), Style::default().fg(Color::White)),
+            Span::styled("ETS Tables: ", Style::default().fg(app.colors.info_text)),
+            Span::styled(
+                ets_count.to_string(),
+                Style::default().fg(app.colors.default_text),
+            ),
         ]);
 
         let fn_count = Line::from(vec![
-            Span::styled("Funs: ", Style::default().fg(Color::Cyan)),
-            Span::styled(fn_count.to_string(), Style::default().fg(Color::White)),
+            Span::styled("Funs: ", Style::default().fg(app.colors.info_text)),
+            Span::styled(
+                fn_count.to_string(),
+                Style::default().fg(app.colors.default_text),
+            ),
         ]);
 
         // Combine all lines into a single Text object
@@ -511,7 +650,7 @@ impl SelectedTab {
 
         let paragraph = Paragraph::new(general_info_text)
             .block(Block::bordered().title("General Information"))
-            .style(Style::default().fg(Color::White))
+            .style(Style::default().fg(app.colors.default_text))
             .alignment(Alignment::Left);
 
         Widget::render(&paragraph, area, buf);
@@ -596,22 +735,23 @@ impl SelectedTab {
             ProcessViewState::MessageQueue => {
                 app.inspecting_pid = selected_pid.clone();
                 (
-                "Decoded Message Queue",
-                app.get_message_queue_info(selected_pid).unwrap(),
-            )}
+                    "Decoded Message Queue",
+                    app.get_message_queue_info(selected_pid).unwrap(),
+                )
+            }
         };
 
         //println!("heap info text: {}", heap_info_text);
 
         let detail_block = Paragraph::new(process_info_text)
             .block(Block::bordered().title("Process Details"))
-            .style(Style::default().fg(Color::White))
+            .style(Style::default().fg(app.colors.default_text))
             .wrap(Wrap { trim: false })
             .alignment(Alignment::Left);
 
         let proc_heap = Paragraph::new(inspect_info_text)
             .block(Block::bordered().title(inspect_info_title))
-            .style(Style::default().fg(Color::White))
+            .style(Style::default().fg(app.colors.default_text))
             .alignment(Alignment::Left);
 
         Widget::render(&detail_block, inner_layout[0], buf);
@@ -705,14 +845,18 @@ impl SelectedTab {
                 .iter()
                 .map(|&h| Cell::from(h))
                 .collect::<Row>()
-                .style(Style::default().fg(Color::White).bg(Color::Green)),
+                .style(
+                    Style::default()
+                        .fg(app.colors.default_text)
+                        .bg(app.colors.header_background),
+                ),
         )
         .highlight_spacing(HighlightSpacing::Always)
         .block(Block::bordered().title("Group Children"));
 
         let detail_block = Paragraph::new(process_info_text)
             .block(Block::bordered().title("Ancestor Details"))
-            .style(Style::default().fg(Color::White))
+            .style(Style::default().fg(app.colors.default_text))
             .wrap(Wrap { trim: false })
             .alignment(Alignment::Left);
 
@@ -726,7 +870,7 @@ impl SelectedTab {
         );
     }
 
-    fn render_inspect(self, area: Rect, buf: &mut Buffer, app: &mut App) {    
+    fn render_inspect(self, area: Rect, buf: &mut Buffer, app: &mut App) {
         let width = if buf.area.height < 70 {
             buf.area.width - 1
         } else {
@@ -738,11 +882,14 @@ impl SelectedTab {
         let inspect_info_title;
         {
             let (t1, t2) = match app.process_view_state {
-                ProcessViewState::Stack => 
-                    {
-                        ("Decoded Stack", app.get_stack_info(&app.inspecting_pid).unwrap())
-                    },
-                ProcessViewState::Heap => ("Decoded Heap", app.get_heap_info(&app.inspecting_pid).unwrap()),
+                ProcessViewState::Stack => (
+                    "Decoded Stack",
+                    app.get_stack_info(&app.inspecting_pid).unwrap(),
+                ),
+                ProcessViewState::Heap => (
+                    "Decoded Heap",
+                    app.get_heap_info(&app.inspecting_pid).unwrap(),
+                ),
                 ProcessViewState::MessageQueue => (
                     "Decoded Message Queue",
                     app.get_message_queue_info(&app.inspecting_pid).unwrap(),
@@ -753,12 +900,11 @@ impl SelectedTab {
         }
 
         let proc_info = Paragraph::new(inspect_info_text)
-        .block(Block::bordered().title(inspect_info_title))
-        .style(Style::default().fg(Color::White))
-        .wrap(Wrap { trim: false })
-        .alignment(Alignment::Left);
+            .block(Block::bordered().title(inspect_info_title))
+            .style(Style::default().fg(app.colors.default_text))
+            .wrap(Wrap { trim: false })
+            .alignment(Alignment::Left);
 
-    
         proc_info.render(area, &mut scroll_view.buf_mut());
         scroll_view.render(area, buf, &mut app.inspect_scroll_state);
     }
