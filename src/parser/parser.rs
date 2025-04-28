@@ -17,6 +17,7 @@
 //! information from the crash dump.
 
 use crate::parser::*;
+use crate::config::CommonColors;
 use dashmap::DashMap;
 use grep::{
     regex::RegexMatcher,
@@ -222,14 +223,13 @@ impl CDParser {
         crash_dump: &'a CrashDump,
         filepath: &String,
         id: &str,
+        colors: &CommonColors,
     ) -> io::Result<Text<'a>> {
         // seeks to the file using the byteoffsets in the dict and just retrives the raw data
-        //println!("{:?}", filepath);
-        // println!("{:?}, {:#?}", id, crash_dump.processes_heap.get(id));
         if let Some(process_heap_ref) = crash_dump.processes_heap.get(id) {
             if let InfoOrIndex::Index(ref heap_index) = *process_heap_ref.value() {
                 let file = OpenOptions::new().read(true).open(filepath)?;
-                return crash_dump.load_proc_heap(heap_index, &file);
+                return crash_dump.load_proc_heap(heap_index, &file, colors);
             }
         }
         Ok(Text::from(""))
@@ -240,12 +240,13 @@ impl CDParser {
         crash_dump: &'a CrashDump,
         filepath: &String,
         id: &str,
+        colors: &CommonColors,
     ) -> io::Result<Text<'a>> {
         if let Some(stack_info_ref) = crash_dump.processes_stack.get(id) {
             if let InfoOrIndex::Index(ref stack_index) = *stack_info_ref.value() {
                 let file = OpenOptions::new().read(true).open(filepath)?;
 
-                return crash_dump.load_proc_stack(stack_index, &file);
+                return crash_dump.load_proc_stack(stack_index, &file, colors);
             }
         }
         Ok(Text::from(""))
@@ -256,12 +257,13 @@ impl CDParser {
         crash_dump: &'a CrashDump,
         filepath: &String,
         id: &str,
+        colors: &CommonColors,
     ) -> io::Result<Text<'a>> {
         if let Some(mq_index_ref) = crash_dump.processes_messages.get(id) {
             if let InfoOrIndex::Index(ref mq_index) = *mq_index_ref.value() {
                 let file = OpenOptions::new().read(true).open(filepath)?;
 
-                return crash_dump.load_proc_message_queue(mq_index, &file);
+                return crash_dump.load_proc_message_queue(mq_index, &file, colors);
             }
         }
 

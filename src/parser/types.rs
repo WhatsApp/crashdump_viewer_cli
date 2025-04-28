@@ -43,7 +43,7 @@
 
 use crossbeam::channel;
 use dashmap::DashMap;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -60,6 +60,8 @@ use std::thread::available_parallelism;
 use std::time::Instant;
 
 use std::thread; // Import rayon traits
+
+use crate::config::CommonColors;
 
 pub const MAX_DEPTH_PARSE_DATATYPE: usize = 5;
 
@@ -739,7 +741,7 @@ impl CrashDump {
     // if it's a offheap binary, simply just print it out the length
     // something with multiple
 
-    pub fn load_proc_heap(&self, index_row: &IndexRow, file: &File) -> io::Result<Text> {
+    pub fn load_proc_heap(&self, index_row: &IndexRow, file: &File, colors: &CommonColors) -> io::Result<Text> {
         let contents = Self::load_section(index_row, file)?;
         let mut text = Text::default();
 
@@ -755,12 +757,12 @@ impl CrashDump {
                                 text.lines.push(Line::from(vec![
                                     Span::styled(
                                         format!("{}", addr),
-                                        Style::default().fg(Color::Yellow),
+                                        Style::default().fg(colors.info_preamble),
                                     ),
                                     Span::raw(" - "),
                                     Span::styled(
                                         format!("{}", parsed_res),
-                                        Style::default().fg(Color::Cyan),
+                                        Style::default().fg(colors.info_text),
                                     ),
                                 ]));
                             }
@@ -768,12 +770,12 @@ impl CrashDump {
                                 text.lines.push(Line::from(vec![
                                     Span::styled(
                                         format!("{}", addr),
-                                        Style::default().fg(Color::Yellow),
+                                        Style::default().fg(colors.info_preamble),
                                     ),
                                     Span::raw(" - "),
                                     Span::styled(
                                         format!("{}", err),
-                                        Style::default().fg(Color::Red),
+                                        Style::default().fg(colors.alt_color_1),
                                     ),
                                 ]));
                             }
@@ -794,7 +796,7 @@ impl CrashDump {
         Ok(text)
     }
 
-    pub fn load_proc_stack(&self, index_row: &IndexRow, file: &File) -> io::Result<Text> {
+    pub fn load_proc_stack(&self, index_row: &IndexRow, file: &File, colors: &CommonColors) -> io::Result<Text> {
         let contents = Self::load_section(index_row, file)?;
         let mut text = Text::default();
         let mut addr = String::new();
@@ -810,22 +812,22 @@ impl CrashDump {
                 let line = Line::from(vec![
                     Span::styled(
                         format!("{}", frame.address),
-                        Style::default().fg(Color::Yellow),
+                        Style::default().fg(colors.info_preamble),
                     ),
                     Span::raw(" - M: "),
                     Span::styled(
                         format!("{}", frame.module),
-                        Style::default().fg(Color::Green),
+                        Style::default().fg(colors.alt_color_1),
                     ),
                     Span::raw(" F: "),
                     Span::styled(
                         format!("{}", frame.function),
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(colors.info_text),
                     ),
                     Span::raw(" A: ("),
                     Span::styled(
                         current_line_variables.join(","),
-                        Style::default().fg(Color::Magenta),
+                        Style::default().fg(colors.alt_color_2),
                     ),
                     Span::raw(")"),
                 ]);
@@ -839,7 +841,7 @@ impl CrashDump {
         Ok(text)
     }
 
-    pub fn load_proc_message_queue(&self, index_row: &IndexRow, file: &File) -> io::Result<Text> {
+    pub fn load_proc_message_queue(&self, index_row: &IndexRow, file: &File, colors: &CommonColors) -> io::Result<Text> {
         let contents = Self::load_section(index_row, file)?;
         let mut text = Text::default();
         if let Ok(DumpSection::ProcMessages(proc_messages)) =
@@ -854,9 +856,9 @@ impl CrashDump {
                     let message_addr = self.parse_datatype(&message_addr, 0).unwrap();
                     let message_val = self.parse_datatype(&message_val, 0).unwrap();
                     let line = Line::from(vec![
-                        Span::styled(message_addr, Style::default().fg(Color::Yellow)),
+                        Span::styled(message_addr, Style::default().fg(colors.info_preamble)),
                         Span::raw(" - "),
-                        Span::styled(message_val, Style::default().fg(Color::Cyan)),
+                        Span::styled(message_val, Style::default().fg(colors.info_text)),
                     ]);
                     text.lines.push(line);
                 });
@@ -1489,183 +1491,183 @@ pub struct ProcInfo {
 }
 
 impl ProcInfo {
-    pub fn format_as_ratatui_text(&self) -> Text {
+    pub fn format_as_ratatui_text(&self, colors: &CommonColors) -> Text {
         // format as a ratatui text, composed of different lines. Each value should have a colorized key and values
         // key should be yellow, value should be cyan
         let mut text = Text::default();
 
         text.lines.push(Line::from(vec![
-            Span::styled("Pid: ", Style::default().fg(Color::Yellow)),
-            Span::styled(self.pid.clone(), Style::default().fg(Color::Cyan)),
+            Span::styled("Pid: ", Style::default().fg(colors.info_preamble)),
+            Span::styled(self.pid.clone(), Style::default().fg(colors.info_text)),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("State: ", Style::default().fg(Color::Yellow)),
-            Span::styled(self.state.clone(), Style::default().fg(Color::Cyan)),
+            Span::styled("State: ", Style::default().fg(colors.info_preamble)),
+            Span::styled(self.state.clone(), Style::default().fg(colors.info_text)),
         ]));
 
         if let Some(name) = &self.name {
             text.lines.push(Line::from(vec![
-                Span::styled("Name: ", Style::default().fg(Color::Yellow)),
-                Span::styled(name.clone(), Style::default().fg(Color::Cyan)),
+                Span::styled("Name: ", Style::default().fg(colors.info_preamble)),
+                Span::styled(name.clone(), Style::default().fg(colors.info_text)),
             ]));
         }
 
         if let Some(spawned_as) = &self.spawned_as {
             text.lines.push(Line::from(vec![
-                Span::styled("Spawned As: ", Style::default().fg(Color::Yellow)),
-                Span::styled(spawned_as.clone(), Style::default().fg(Color::Cyan)),
+                Span::styled("Spawned As: ", Style::default().fg(colors.info_preamble)),
+                Span::styled(spawned_as.clone(), Style::default().fg(colors.info_text)),
             ]));
         }
 
         if let Some(spawned_by) = &self.spawned_by {
             text.lines.push(Line::from(vec![
-                Span::styled("Spawned By: ", Style::default().fg(Color::Yellow)),
-                Span::styled(spawned_by.clone(), Style::default().fg(Color::Cyan)),
+                Span::styled("Spawned By: ", Style::default().fg(colors.info_preamble)),
+                Span::styled(spawned_by.clone(), Style::default().fg(colors.info_text)),
             ]));
         }
 
         text.lines.push(Line::from(vec![
-            Span::styled("Message Queue Length: ", Style::default().fg(Color::Yellow)),
+            Span::styled("MsgQ Length: ", Style::default().fg(colors.info_preamble)),
             Span::styled(
                 format!("{}", self.message_queue_length),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
             Span::styled(
                 "Number of Heap Fragments: ",
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(colors.info_preamble),
             ),
             Span::styled(
                 format!("{}", self.number_of_heap_fragments),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("Heap Fragment Data: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Heap Fragment Data: ", Style::default().fg(colors.info_preamble)),
             Span::styled(
                 format!("{}", self.heap_fragment_data),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("Reductions: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Reductions: ", Style::default().fg(colors.info_preamble)),
             Span::styled(
                 format!("{}", self.reductions),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("Stack Heap: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Stack Heap: ", Style::default().fg(colors.info_preamble)),
             Span::styled(
                 format!("{}", self.stack_heap),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("Old Heap: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Old Heap: ", Style::default().fg(colors.info_preamble)),
             Span::styled(
                 format!("{} ({})", human_bytes(self.old_heap), self.old_heap),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("Heap Unused: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Heap Unused: ", Style::default().fg(colors.info_preamble)),
             Span::styled(
                 format!("{} ({})", human_bytes(self.heap_unused), self.heap_unused),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("Old Heap Unused: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Old Heap Unused: ", Style::default().fg(colors.info_preamble)),
             Span::styled(
                 format!(
                     "{} ({})",
                     human_bytes(self.old_heap_unused),
                     self.old_heap_unused
                 ),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("Bin Vheap: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Bin Vheap: ", Style::default().fg(colors.info_preamble)),
             Span::styled(
                 format!("{} ({})", human_bytes(self.bin_vheap), self.bin_vheap),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("Old Bin Vheap: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Old Bin Vheap: ", Style::default().fg(colors.info_preamble)),
             Span::styled(
                 format!(
                     "{} ({})",
                     human_bytes(self.old_bin_vheap),
                     self.old_bin_vheap
                 ),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("Bin Vheap Unused: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Bin Vheap Unused: ", Style::default().fg(colors.info_preamble)),
             Span::styled(
                 format!(
                     "{} ({})",
                     human_bytes(self.bin_vheap_unused),
                     self.bin_vheap_unused
                 ),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("Old Bin Vheap Unused: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Old Bin Vheap Unused: ", Style::default().fg(colors.info_preamble)),
             Span::styled(
                 format!(
                     "{} ({})",
                     human_bytes(self.old_bin_vheap_unused),
                     self.old_bin_vheap_unused
                 ),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("Memory: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Memory: ", Style::default().fg(colors.info_preamble)),
             Span::styled(
                 format!("{} ({})", human_bytes(self.memory), self.memory),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("Arity: ", Style::default().fg(Color::Yellow)),
-            Span::styled(format!("{}", self.arity), Style::default().fg(Color::Cyan)),
+            Span::styled("Arity: ", Style::default().fg(colors.info_preamble)),
+            Span::styled(format!("{}", self.arity), Style::default().fg(colors.info_text)),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("Program Counter: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Program Counter: ", Style::default().fg(colors.info_preamble)),
             Span::styled(
                 format!("{:?}", self.program_counter),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
         text.lines.push(Line::from(vec![
-            Span::styled("Internal State: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Internal State: ", Style::default().fg(colors.info_preamble)),
             Span::styled(
                 format!("{:?}", self.internal_state),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(colors.info_text),
             ),
         ]));
 
@@ -1704,7 +1706,7 @@ Unused: {}\nOld Bin Vheap Unused: {}\nMemory: {}\nArity: {}\n{:#?}\nInternal Sta
         [
             "Pid",
             "Name",
-            "Message Queue Length",
+            "MsgQ Length",
             "Memory",
             "TotalBinVHeap",
             "BinVHeap",

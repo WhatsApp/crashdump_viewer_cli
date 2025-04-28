@@ -22,12 +22,16 @@ pub struct CommonColors {
     pub header_text: Color,
     pub header_background: Color,
     pub highlight_background: Color, // e.g., for selected items background
-    pub error_text: Color,
-    pub warning_text: Color,
+    pub info_preamble: Color,
     pub info_text: Color,
-    // Add other commonly used colors if needed
+
     pub border_color: Color,
     pub title_color: Color,
+
+    pub alt_color_1: Color,
+    pub alt_color_2: Color,
+    pub alt_color_3: Color,
+    pub background_color: Color
 }
 
 impl Default for CommonColors {
@@ -39,11 +43,14 @@ impl Default for CommonColors {
             header_text: Color::White,
             header_background: Color::Blue,
             highlight_background: Color::DarkGray,
-            error_text: Color::Red,
-            warning_text: Color::Yellow,
-            info_text: Color::Cyan,
+            info_preamble: Color::Yellow,
+            info_text: Color::White,
             border_color: Color::Gray,
             title_color: Color::White,
+            alt_color_1: Color::Blue,
+            alt_color_2: Color::Magenta,
+            alt_color_3: Color::Red,
+            background_color: Color::Black,
         }
     }
 }

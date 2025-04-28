@@ -21,7 +21,10 @@ use crate::{
     event::{Event, EventHandler},
     handler::handle_key_events,
     tui::Tui,
+    config::CommonColors,
 };
+use ratatui::style::Color;
+
 
 pub mod app;
 pub mod config;
@@ -44,6 +47,10 @@ struct Args {
     /// Path to the crash dump
     #[arg(required = true)]
     filepath: String,
+
+    /// Turns on light mode
+    #[clap(long, short, action)]
+    light_mode: bool,
 }
 
 #[tokio::main]
@@ -52,7 +59,28 @@ async fn main() -> AppResult<()> {
 
     if args.action == "tui" {
         // Create an application.
-        let mut app = App::new(args.filepath);
+
+        let colors = if !args.light_mode {
+            CommonColors::default()
+        } else {
+            CommonColors {
+                default_text: Color::Black,
+                highlight_text: Color::Gray,
+                header_text: Color::Black,
+                header_background: Color::Yellow,
+                highlight_background: Color::DarkGray,
+                info_preamble: Color::Blue,
+                info_text: Color::Cyan,
+                border_color: Color::Gray,
+                title_color: Color::Black,
+                alt_color_1: Color::Blue,
+                alt_color_2: Color::Magenta,
+                alt_color_3: Color::Red,
+                background_color: Color::White,
+            }
+        };
+
+        let mut app = App::new(args.filepath, Some(colors));
 
         // Initialize the terminal user interface.
         let backend = CrosstermBackend::new(io::stdout());

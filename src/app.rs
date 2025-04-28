@@ -96,8 +96,6 @@ pub enum SelectedTab {
     #[default]
     #[strum(to_string = "General Information")]
     General,
-    // #[strum(to_string = "Index")]
-    // Index,
     #[strum(to_string = "Process Group Info")]
     ProcessGroup,
     #[strum(to_string = "Process Info")]
@@ -169,11 +167,15 @@ impl Default for App<'_> {
 
 impl App<'_> {
     /// Constructs a new instance of [`App`].
-    pub fn new(filepath: String) -> Self {
+    pub fn new(filepath: String, colors: Option<CommonColors> ) -> Self {
         let now = Instant::now();
         let parser = parser::CDParser::new(&filepath).unwrap();
         let mut ret = Self::default();
+
         ret.filepath = filepath.clone();
+        if let Some(colors) = colors { 
+            ret.colors = colors;
+        }
 
         ret.index_map = parser.build_index().unwrap();
         ret.crash_dump = parser.parse(&ret.index_map).unwrap();
@@ -455,17 +457,17 @@ impl App<'_> {
 
     pub fn get_heap_info(&self, pid: &str) -> io::Result<Text> {
         self.parser
-            .get_heap_info(&self.crash_dump, &self.filepath, pid)
+            .get_heap_info(&self.crash_dump, &self.filepath, pid, &self.colors)
     }
 
     pub fn get_stack_info(&self, pid: &str) -> io::Result<Text> {
         self.parser
-            .get_stack_info(&self.crash_dump, &self.filepath, pid)
+            .get_stack_info(&self.crash_dump, &self.filepath, pid, &self.colors)
     }
 
     pub fn get_message_queue_info(&self, pid: &str) -> io::Result<Text> {
         self.parser
-            .get_message_queue_info(&self.crash_dump, &self.filepath, pid)
+            .get_message_queue_info(&self.crash_dump, &self.filepath, pid, &self.colors)
     }
 }
 
@@ -583,7 +585,7 @@ impl Widget for &mut App<'_> {
                     ),
                 ]))
                 .border_style(Style::default().fg(self.colors.border_color))
-                .style(Style::default().bg(Color::Black));
+                .style(Style::default().bg(self.colors.background_color));
 
             let paragraph = Paragraph::new(help_text)
                 .block(block)
@@ -656,13 +658,13 @@ impl SelectedTab {
         let memory_information_header = Line::from(vec![
             Span::styled(
                 "Memory Information:",
-                Style::default().fg(app.colors.header_text),
+                Style::default().fg(app.colors.info_preamble),
             ),
             Span::raw("\n"),
         ]);
 
         let process_count = Line::from(vec![
-            Span::styled("Process Count: ", Style::default().fg(app.colors.info_text)),
+            Span::styled("Process Count: ", Style::default().fg(app.colors.info_preamble)),
             Span::styled(
                 process_count.to_string(),
                 Style::default().fg(app.colors.default_text),
@@ -670,7 +672,7 @@ impl SelectedTab {
         ]);
 
         let ets_count = Line::from(vec![
-            Span::styled("ETS Tables: ", Style::default().fg(app.colors.info_text)),
+            Span::styled("ETS Tables: ", Style::default().fg(app.colors.info_preamble)),
             Span::styled(
                 ets_count.to_string(),
                 Style::default().fg(app.colors.default_text),
@@ -678,7 +680,7 @@ impl SelectedTab {
         ]);
 
         let fn_count = Line::from(vec![
-            Span::styled("Funs: ", Style::default().fg(app.colors.info_text)),
+            Span::styled("Funs: ", Style::default().fg(app.colors.info_preamble)),
             Span::styled(
                 fn_count.to_string(),
                 Style::default().fg(app.colors.default_text),
@@ -753,7 +755,7 @@ impl SelectedTab {
                     InfoOrIndex::Info(ref proc_info) => {
                         let proc_info: &types::ProcInfo = proc_info;
                         active_proc_info = proc_info.clone();
-                        active_proc_info.format_as_ratatui_text()
+                        active_proc_info.format_as_ratatui_text(&app.colors)
                     }
                     InfoOrIndex::Index(_) => {
                         Text::raw(format!("Index for pid: {:?}", selected_pid).to_string())
@@ -832,7 +834,7 @@ impl SelectedTab {
                     InfoOrIndex::Info(ref proc_info) => {
                         let proc_info: &types::ProcInfo = proc_info;
                         active_proc_info = proc_info.clone();
-                        active_proc_info.format_as_ratatui_text()
+                        active_proc_info.format_as_ratatui_text(&app.colors)
                     }
                     InfoOrIndex::Index(_) => {
                         Text::raw(format!("Index for pid: {:?}", selected_pid).to_string())
