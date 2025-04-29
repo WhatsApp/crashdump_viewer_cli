@@ -338,10 +338,13 @@ fn parse_section(s: &str, _id: Option<&str>) -> Result<DumpSection, String> {
     let section = match string_tag_to_enum(section.tag.as_str()) {
         Tag::Preamble => {
             // if the `System version` section has "[64-bit]", word size is 8 bytes, otherwise 4
-            let system_version = data
-                .get("System version")
-                .map(|s| s.clone())
-                .unwrap_or_else(|| "".to_string());
+
+            let get_or_empty = | key: &str| -> String {
+                data.get(key).map(|s| s.clone()).unwrap_or_else(|| "".to_string())
+            };
+
+            let system_version = get_or_empty("System version");
+
             let word_size_local = if system_version.contains("[64-bit]") {
                 8
             } else {
@@ -353,14 +356,18 @@ fn parse_section(s: &str, _id: Option<&str>) -> Result<DumpSection, String> {
                 .set(word_size_local)
                 .expect("WORD_SIZE should only be set once");
 
+            let slogan = get_or_empty("Slogan");
+            let taints = data.get("Taints").map(|s| s.clone()).unwrap_or_else(|| "".to_string());
+            let calling_thread = data.get("Calling Thread").map(|s| s.clone()).unwrap_or_else(|| "".to_string());
+
             let preamble = Preamble {
                 version: id,
                 time: raw_lines[0].clone(),
-                slogan: data["Slogan"].clone(),
-                erts: system_version.clone(), // Now system_version owns the String
-                taints: data["Taints"].clone(),
+                slogan: slogan,
+                erts: system_version.clone(),
+                taints: taints,
                 atom_count: data["Atoms"].parse::<i64>().unwrap(),
-                calling_thread: data["Calling Thread"].clone(),
+                calling_thread: calling_thread,
                 word_size: word_size_local,
             };
             DumpSection::Preamble(preamble)
@@ -392,7 +399,7 @@ pub struct IndexRow {
 }
 
 // pub type IndexMap = HashMap<Tag, HashMap<Option<String>, IndexRow>>;
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IndexValue {
     Map(HashMap<String, IndexRow>),
     List(Vec<IndexRow>),

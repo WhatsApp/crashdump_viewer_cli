@@ -80,7 +80,7 @@ async fn main() -> AppResult<()> {
             }
         };
 
-        let mut app = App::new(args.filepath, Some(colors));
+        let mut app = App::new(args.filepath, Some(colors))?;
 
         // Initialize the terminal user interface.
         let backend = CrosstermBackend::new(io::stdout());

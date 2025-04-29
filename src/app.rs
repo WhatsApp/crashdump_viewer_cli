@@ -166,19 +166,25 @@ impl Default for App<'_> {
 }
 
 impl App<'_> {
-    /// Constructs a new instance of [`App`].
-    pub fn new(filepath: String, colors: Option<CommonColors> ) -> Self {
+
+    pub fn new(filepath: String, colors: Option<CommonColors>) -> Result<Self, io::Error> {
         let now = Instant::now();
-        let parser = parser::CDParser::new(&filepath).unwrap();
+
+        let parser = parser::CDParser::new(&filepath)?;
+
         let mut ret = Self::default();
 
         ret.filepath = filepath.clone();
-        if let Some(colors) = colors { 
+        if let Some(colors) = colors {
             ret.colors = colors;
         }
 
-        ret.index_map = parser.build_index().unwrap();
-        ret.crash_dump = parser.parse(&ret.index_map).unwrap();
+        ret.index_map = parser.build_index()?;
+        if ret.index_map.get(&Tag::Proc) == None {
+            println!("Couldn't find any processes! Are you sure this crash dump is valid?");
+            return Err(io::Error::other("Invalid crash dump detected. Found no `proc` sections."));
+        }
+        ret.crash_dump = parser.parse(&ret.index_map)?;
 
         ret.ancestor_map = parser::CDParser::create_descendants_table(&ret.crash_dump.processes);
         ret.crash_dump.group_info_map =
@@ -192,12 +198,14 @@ impl App<'_> {
 
         ///////// Process Group Info
 
-        ret.footer_text.insert(SelectedTab::Process, "Press S for Stack, H for Heap, M for Message Queue | I to inspect contents |  < > to change tabs | Press q to quit".to_string());
+        ret.footer_text.insert(SelectedTab::Process, "Press S for Stack, H for Heap, M for Message Queue | I to inspect contents | < > to change tabs | Press q to quit".to_string());
         ret.footer_text.insert(
             SelectedTab::Inspect,
             " <-, -> to change tabs | q to quit | ? for help".to_string(),
         );
 
+        // .get_mut() returns Option, but it's okay if it's None here
+        // as we just skip the select call.
         if let Some(state) = ret.table_states.get_mut(&SelectedTab::Process) {
             if !ret.tab_lists[&SelectedTab::Process].is_empty() {
                 state.select(Some(0));
@@ -215,7 +223,7 @@ impl App<'_> {
         let elapsed = now.elapsed();
         println!("Building everything took: {:.2?}", elapsed);
 
-        ret
+        Ok(ret)
     }
 
     pub fn sort_and_update_process_group_table(&mut self) {
