@@ -276,6 +276,11 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
                 }
             }
 
+            // B: Back to Process tab (browse mode)
+            KeyCode::Char('b') | KeyCode::Char('B') if app.analysis_text.is_empty() => {
+                app.selected_tab = SelectedTab::Process;
+            }
+
             // Legacy commands (for backwards compatibility with old text-based analysis)
             KeyCode::Char('m') | KeyCode::Char('M') => {
                 app.run_memory_analysis(10);
@@ -344,14 +349,14 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
                     }
                 }
                 KeyCode::Enter | KeyCode::Char('p') | KeyCode::Char('P') => {
-                    // Analyze the selected process (from process group)
+                    // Analyze the selected process (from process group) - switch to Memory tab
                     if let Some(table_state) = app.table_states.get(&SelectedTab::ProcessGroup) {
                         if let Some(selected) = table_state.selected() {
                             if let Some(list) = app.tab_lists.get(&SelectedTab::ProcessGroup) {
                                 if selected < list.len() {
                                     let pid = list[selected].clone();
                                     app.run_process_analysis(&pid);
-                                    app.selected_tab = SelectedTab::Process;
+                                    app.selected_tab = SelectedTab::Memory;
                                 }
                             }
                         }
@@ -482,11 +487,11 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
                     }
                 }
                 KeyCode::Enter | KeyCode::Char('p') | KeyCode::Char('P') => {
-                    // Analyze the selected process
+                    // Analyze the selected process - switch to Memory tab
                     let pid = app.get_selected_pid();
                     if !pid.is_empty() {
                         app.run_process_analysis(&pid);
-                        app.selected_tab = SelectedTab::Process;
+                        app.selected_tab = SelectedTab::Memory;
                     }
                 }
                 KeyCode::Char('s') | KeyCode::Char('S') => {

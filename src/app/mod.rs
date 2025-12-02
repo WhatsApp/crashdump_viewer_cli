@@ -674,12 +674,7 @@ impl SelectedTab {
     }
 
     fn render_process(self, area: Rect, buf: &mut Buffer, app: &mut App) {
-        // If a process is being analyzed (analysis_pid is set), show the detailed analysis view
-        if !app.analysis_pid.is_empty() {
-            return self.render_process_analysis(area, buf, app);
-        }
-
-        // Otherwise show the normal process list view
+        // Always show the normal process list view (removed analysis_pid check)
         // If in fullscreen mode, only show the selected view (Stack/Heap/MessageQueue)
         if app.fullscreen_mode {
             let selected_item;
@@ -738,10 +733,10 @@ impl SelectedTab {
             return;
         }
 
-        // Normal mode: table on top, details below
+        // Normal mode: table on top (50%), details below (50%)
         let outer_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Percentage(40), Constraint::Percentage(60)])
+            .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
 
         let selected_item;
@@ -775,10 +770,10 @@ impl SelectedTab {
         let selected_pid = &app.tab_lists[&SelectedTab::Process][selected_item];
         let selected_process_result = app.crash_dump.processes.get(selected_pid);
 
-        // Bottom section: show process details on left, selected view on right
+        // Bottom section: show process details on left (25%), selected view on right (75%)
         let bottom_layout = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints(vec![Constraint::Percentage(35), Constraint::Percentage(65)])
+            .constraints(vec![Constraint::Percentage(25), Constraint::Percentage(75)])
             .split(outer_layout[1]);
 
         let process_info_text: Text;
@@ -976,26 +971,9 @@ impl SelectedTab {
     }
 
     fn render_memory(self, area: Rect, buf: &mut Buffer, app: &mut App) {
-        // For now, show a placeholder - we'll implement memory analysis here
-        let help_text = vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "Memory Analysis",
-                Style::default().fg(app.colors.header_text).bold(),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Coming soon: Memory statistics and top processes by memory usage",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ];
-
-        let help_paragraph = Paragraph::new(help_text)
-            .block(Block::bordered().title("Memory Analysis"))
-            .style(Style::default().fg(app.colors.default_text))
-            .alignment(Alignment::Center);
-
-        Widget::render(&help_paragraph, area, buf);
+        // Memory Analysis tab - shows process analysis interface
+        // Use P/M/R keys to analyze processes
+        self.render_process_analysis(area, buf, app);
     }
 
     fn render_process_analysis(self, area: Rect, buf: &mut Buffer, app: &mut App) {
