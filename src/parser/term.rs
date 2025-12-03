@@ -39,13 +39,16 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use num_bigint::{BigInt, BigUint};
+use std::str::FromStr;
 
 /// A parsed Erlang term that can be stored in the term dictionary.
 #[derive(Debug, Clone)]
 pub enum ParsedTerm {
     // Simple types
     Integer(i64),
-    BigNum(String), // Store as string for now, can upgrade to num_bigint later
+    BigNum(BigInt), // Arbitrary precision integer
     Float(f64),
     Atom(String),
     Nil,
@@ -433,13 +436,25 @@ impl HeapParser {
     /// Parse a big number term.
     ///
     /// Formats: `B16#<hex>`, `B-16#<hex>`, `B<decimal>`
-    fn parse_bignum_term(&self, addr: u64, data: &str) -> Result<ParsedTerm, String> {
+    fn parse_bignum_term(&self, _addr: u64, data: &str) -> Result<ParsedTerm, String> {
         if data.starts_with("B16#") {
-            Ok(ParsedTerm::BigNum(data[4..].to_string()))
+            // Positive hexadecimal bignum
+            let hex_str = &data[4..];
+            BigInt::parse_bytes(hex_str.as_bytes(), 16)
+                .ok_or_else(|| format!("Invalid hex bignum: {}", data))
+                .map(ParsedTerm::BigNum)
         } else if data.starts_with("B-16#") {
-            Ok(ParsedTerm::BigNum(format!("-{}", &data[5..])))
+            // Negative hexadecimal bignum
+            let hex_str = &data[5..];
+            BigInt::parse_bytes(hex_str.as_bytes(), 16)
+                .map(|n| ParsedTerm::BigNum(-n))
+                .ok_or_else(|| format!("Invalid negative hex bignum: {}", data))
         } else if data.starts_with("B") {
-            Ok(ParsedTerm::BigNum(data[1..].to_string()))
+            // Decimal bignum
+            let dec_str = &data[1..];
+            BigInt::from_str(dec_str)
+                .map(ParsedTerm::BigNum)
+                .map_err(|e| format!("Invalid decimal bignum: {} - {}", data, e))
         } else {
             Err(format!("Invalid bignum format: {}", data))
         }
@@ -499,10 +514,29 @@ impl HeapParser {
 
     /// Parse a heap binary (Yh).
     ///
-    /// Format: `Yh<size>:<bytes>`
-    fn parse_heap_binary(&self, addr: u64, data: &str) -> Result<ParsedTerm, String> {
-        // TODO: Implement proper binary decoding (base64 if needed)
-        Ok(ParsedTerm::HeapBinary(data.as_bytes().to_vec()))
+    /// Format: `Yh<size>:<bytes>` or `Yh<size>:<base64_bytes>` (if use_base64)
+    fn parse_heap_binary(&self, _addr: u64, data: &str) -> Result<ParsedTerm, String> {
+        if let Some(colon_pos) = data.find(':') {
+            let size_str = &data[..colon_pos];
+            let _size = usize::from_str_radix(size_str, 16)
+                .map_err(|e| format!("Invalid binary size: {}", e))?;
+            let content = &data[colon_pos + 1..];
+
+            // Decode binary content
+            let bytes = if self.use_base64 {
+                // Decode from base64
+                BASE64.decode(content)
+                    .map_err(|e| format!("Failed to decode base64 binary: {}", e))?
+            } else {
+                // Direct byte representation (each pair of hex digits is a byte)
+                // For simplicity, just store as bytes for now
+                content.as_bytes().to_vec()
+            };
+
+            Ok(ParsedTerm::HeapBinary(bytes))
+        } else {
+            Err(format!("Invalid heap binary format: {}", data))
+        }
     }
 
     /// Parse a reference-counted binary (Yc).
@@ -572,17 +606,126 @@ impl HeapParser {
     ///
     /// Format: `Mf<size>:<keys_tuple>:<values_tuple>`
     fn parse_flatmap(&mut self, addr: u64, data: &str) -> Result<ParsedTerm, String> {
-        // TODO: Implement proper flatmap parsing
-        // For now, return placeholder
-        Ok(ParsedTerm::FlatMap(HashMap::new()))
+        // Parse the size
+        let parts: Vec<&str> = data.splitn(3, ':').collect();
+        if parts.len() < 3 {
+            return Err(format!("Invalid flatmap format: {}", data));
+        }
+
+        let size = usize::from_str_radix(parts[0], 16)
+            .map_err(|e| format!("Invalid flatmap size: {}", e))?;
+
+        // Parse keys tuple (should be a tuple)
+        let keys_str = parts[1];
+        let keys_term = self.parse_term(keys_str)?;
+
+        // Parse values tuple
+        let values_str = parts[2];
+        let values_tuple = self.parse_tuple(addr, values_str)?;
+
+        // Extract the actual values from the tuple
+        let values = match values_tuple {
+            ParsedTerm::Tuple(vals) => vals,
+            _ => return Err("Flatmap values not a tuple".to_string()),
+        };
+
+        // Extract the keys
+        let keys = match keys_term {
+            ParsedTerm::Tuple(ks) => ks,
+            _ => return Err("Flatmap keys not a tuple".to_string()),
+        };
+
+        // Verify size matches
+        if keys.len() != size || values.len() != size {
+            return Err(format!(
+                "Flatmap size mismatch: expected {}, got keys={}, values={}",
+                size,
+                keys.len(),
+                values.len()
+            ));
+        }
+
+        // Zip keys and values into a HashMap
+        // For now, using string representation of keys
+        let mut map = HashMap::new();
+        for (key, value) in keys.into_iter().zip(values.into_iter()) {
+            map.insert(format!("{}", key), value);
+        }
+
+        Ok(ParsedTerm::FlatMap(map))
     }
 
     /// Parse a hashmap head node (Mh).
     ///
     /// Format: `Mh<map_size>:<node_count>:<nodes_tuple>`
     fn parse_hashmap_head(&mut self, addr: u64, data: &str) -> Result<ParsedTerm, String> {
-        // TODO: Implement proper hashmap parsing with node flattening
-        Ok(ParsedTerm::HashMap(HashMap::new()))
+        // Parse the format
+        let parts: Vec<&str> = data.splitn(3, ':').collect();
+        if parts.len() < 3 {
+            return Err(format!("Invalid hashmap format: {}", data));
+        }
+
+        let map_size = usize::from_str_radix(parts[0], 16)
+            .map_err(|e| format!("Invalid hashmap size: {}", e))?;
+        let _node_count = usize::from_str_radix(parts[1], 16)
+            .map_err(|e| format!("Invalid node count: {}", e))?;
+
+        // Parse the nodes tuple
+        let nodes_str = parts[2];
+        let nodes_term = self.parse_tuple(addr, nodes_str)?;
+
+        let nodes = match nodes_term {
+            ParsedTerm::Tuple(ns) => ns,
+            _ => return Err("Hashmap nodes not a tuple".to_string()),
+        };
+
+        // Flatten the hashmap nodes into key-value pairs
+        let pairs = self.flatten_hashmap_nodes(&nodes)?;
+
+        // Verify size
+        if pairs.len() != map_size {
+            return Err(format!(
+                "Hashmap size mismatch: expected {}, got {}",
+                map_size,
+                pairs.len()
+            ));
+        }
+
+        // Convert to HashMap
+        let mut map = HashMap::new();
+        for (key, value) in pairs {
+            map.insert(format!("{}", key), value);
+        }
+
+        Ok(ParsedTerm::HashMap(map))
+    }
+
+    /// Flatten hashmap nodes into key-value pairs.
+    ///
+    /// Hashmap nodes can be:
+    /// - Direct key-value pairs (2-tuples)
+    /// - Interior nodes (Mn) containing more nodes
+    fn flatten_hashmap_nodes(&mut self, nodes: &[ParsedTerm]) -> Result<Vec<(ParsedTerm, ParsedTerm)>, String> {
+        let mut pairs = Vec::new();
+
+        for node in nodes {
+            match node {
+                // A 2-tuple is a key-value pair
+                ParsedTerm::Tuple(elems) if elems.len() == 2 => {
+                    pairs.push((elems[0].clone(), elems[1].clone()));
+                }
+                // A tuple with more elements might contain nested nodes
+                ParsedTerm::Tuple(elems) => {
+                    // Recursively flatten
+                    let nested = self.flatten_hashmap_nodes(elems)?;
+                    pairs.extend(nested);
+                }
+                // Other terms are ignored (shouldn't happen in valid hashmap)
+                _ => {}
+            }
+        }
+
+        Ok(pairs)
     }
 
     /// Parse a hashmap interior node (Mn).

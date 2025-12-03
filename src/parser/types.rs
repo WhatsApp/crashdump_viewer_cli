@@ -62,6 +62,7 @@ use std::time::Instant;
 use std::thread; // Import rayon traits
 
 use crate::config::CommonColors;
+use crate::parser::term::HeapParser;
 
 pub const MAX_DEPTH_PARSE_DATATYPE: usize = 5;
 
