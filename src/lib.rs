@@ -12,3 +12,4 @@ pub use self::parser::types::*;
 pub use app::App;
 pub use event::Event;
 pub use tui::Tui;
+pub use ratatui;
