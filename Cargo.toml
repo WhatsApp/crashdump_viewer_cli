@@ -34,3 +34,6 @@ base64 = "0.22.1"
 crossbeam = "0.8.4"
 dashmap = "6.1.0"
 tui-scrollview = "0.5.1"
+[profile.release]
+codegen-units = 1
+lto = true
