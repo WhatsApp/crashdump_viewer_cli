@@ -30,8 +30,20 @@ shows
 
 
 ## Building Crash Dump Viewer CLI
+
+To build manually:
+
 ```
 cargo build
+```
+
+Alternatively, if you use Nix, you can build or enter a development shell using the provided flake:
+```
+# To build
+nix build
+
+# To enter a dev shell
+nix develop
 ```
 
 See the [CONTRIBUTING](CONTRIBUTING.md) file for how to help out.
