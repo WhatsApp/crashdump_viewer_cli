@@ -130,8 +130,8 @@ impl CDParser {
             let index_row = IndexRow {
                 r#type: format!("{:?}", tag1),
                 id: tag_id.clone(),
-                start: offset1.to_string(),
-                length: (offset2 - offset1).to_string(),
+                start: *offset1,
+                length: offset2 - offset1,
             };
             match tag_id {
                 Some(id) => {
@@ -157,8 +157,8 @@ impl CDParser {
             let index_row = IndexRow {
                 r#type: format!("{:?}", last_tag),
                 id: last_id.clone(),
-                start: last_offset.to_string(),
-                length: (file_size - last_offset).to_string(),
+                start: *last_offset,
+                length: file_size - last_offset,
             };
             match last_id {
                 Some(id) => {

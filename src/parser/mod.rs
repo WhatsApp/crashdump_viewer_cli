@@ -13,5 +13,6 @@
 // limitations under the License.
 
 pub mod parser;
+pub mod term;
 pub mod types;
 pub use self::types::*;

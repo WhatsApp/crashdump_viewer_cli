@@ -43,7 +43,7 @@
 
 use crossbeam::channel;
 use dashmap::DashMap;
-use ratatui::style::Style;
+use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -62,10 +62,39 @@ use std::time::Instant;
 use std::thread; // Import rayon traits
 
 use crate::config::CommonColors;
+use crate::parser::term::HeapParser;
 
 pub const MAX_DEPTH_PARSE_DATATYPE: usize = 5;
 
 static WORD_SIZE: OnceLock<u8> = OnceLock::new();
+
+// Cached regex patterns for performance
+static PROGRAM_COUNTER_RE: OnceLock<Regex> = OnceLock::new();
+static STACK_FUNC_INFO_RE: OnceLock<Regex> = OnceLock::new();
+static STACK_NO_MODULE_RE: OnceLock<Regex> = OnceLock::new();
+
+fn get_program_counter_regex() -> &'static Regex {
+    PROGRAM_COUNTER_RE.get_or_init(|| {
+        Regex::new(r"Program counter: (0x[0-9a-fA-F]+) \(([^:]+):([^/]+)/(\d+) \+ (\d+)\)")
+            .expect("Valid regex pattern")
+    })
+}
+
+fn get_stack_func_info_regex() -> &'static Regex {
+    STACK_FUNC_INFO_RE.get_or_init(|| {
+        Regex::new(
+            r"^(?P<address>0x[0-9A-Fa-f]+):S(?:Return addr|Catch)\s+(?P<retaddr>0x[0-9A-Fa-f]+)\s+\((?P<module>[^:]+):(?P<function>[^/]+)/(?P<arity>\d+)\s*\+\s*(?P<offset>\d+)\)"
+        ).expect("Valid regex pattern")
+    })
+}
+
+fn get_stack_no_module_regex() -> &'static Regex {
+    STACK_NO_MODULE_RE.get_or_init(|| {
+        Regex::new(
+            r"^(?P<address>0x[0-9A-Fa-f]+):S(?:Return addr|Catch)\s+(?P<retaddr>0x[0-9A-Fa-f]+)\s+\((?P<function><[^>]+>)\)"
+        ).expect("Valid regex pattern")
+    })
+}
 
 pub const TAG_PREAMBLE: &str = "erl_crash_dump";
 pub const TAG_ABORT: &str = "abort";
@@ -394,8 +423,8 @@ fn parse_section(s: &str, _id: Option<&str>) -> Result<DumpSection, String> {
 pub struct IndexRow {
     pub r#type: String, // Use r#type to avoid keyword conflict
     pub id: Option<String>,
-    pub start: String,
-    pub length: String,
+    pub start: u64,
+    pub length: u64,
 }
 
 // pub type IndexMap = HashMap<Tag, HashMap<Option<String>, IndexRow>>;
@@ -440,8 +469,8 @@ pub enum InfoOrIndex<T> {
 #[derive(Debug)]
 pub struct CrashDump {
     // physical crash dump sections
-    pub preamble: Preamble,
-    pub memory: MemoryInfo,
+    pub preamble: Mutex<Preamble>,
+    pub memory: Mutex<MemoryInfo>,
     pub allocators: Vec<InfoOrIndex<AllocatorInfo>>,
     pub nodes: Vec<InfoOrIndex<NodeInfo>>,
 
@@ -477,7 +506,7 @@ pub struct CrashDump {
 impl CrashDump {
     pub fn new() -> CrashDump {
         CrashDump {
-            preamble: Preamble {
+            preamble: Mutex::new(Preamble {
                 version: "".to_string(),
                 time: "".to_string(),
                 slogan: "".to_string(),
@@ -486,8 +515,8 @@ impl CrashDump {
                 atom_count: 0,
                 calling_thread: "".to_string(),
                 word_size: 8,
-            },
-            memory: MemoryInfo {
+            }),
+            memory: Mutex::new(MemoryInfo {
                 total: 0,
                 processes: Processes { total: 0, used: 0 },
                 system: 0,
@@ -495,7 +524,7 @@ impl CrashDump {
                 binary: 0,
                 code: 0,
                 ets: 0,
-            },
+            }),
             allocators: vec![],
             nodes: vec![],
             processes: DashMap::new(),
@@ -523,19 +552,17 @@ impl CrashDump {
     }
 
     pub fn load_section(index_row: &IndexRow, file: &File) -> io::Result<String> {
-        let start_offset: u64 = index_row.start.parse().unwrap_or(0);
-        let length: u64 = index_row.length.parse().unwrap_or(0);
+        let start_offset = index_row.start;
+        let length = index_row.length;
 
         let mut buffer = vec![0; length as usize];
 
-        // file.seek(SeekFrom::Start(start_offset))?;
-
-        // file.read_exact(&mut buffer)?;
-
         file.read_exact_at(&mut buffer, start_offset)?;
 
-        let contents = String::from_utf8_lossy(&buffer);
-        Ok(contents.to_string())
+        // Try to avoid extra allocation if the buffer is already valid UTF-8
+        Ok(String::from_utf8(buffer).unwrap_or_else(|e| {
+            String::from_utf8_lossy(e.as_bytes()).into_owned()
+        }))
     }
 
     /// Creates a new `CrashDump` from an `IndexMap`.
@@ -548,7 +575,7 @@ impl CrashDump {
     pub fn from_index_map(index_map: &IndexMap, file_path: &PathBuf) -> io::Result<Self> {
         let now = Instant::now();
 
-        let crash_dump = Arc::new(Mutex::new(CrashDump::new()));
+        let crash_dump = Arc::new(CrashDump::new());
         let file = File::open(file_path)?;
         let file = Arc::new(file);
 
@@ -575,8 +602,7 @@ impl CrashDump {
                                 if let Ok(DumpSection::Proc(proc)) =
                                     parse_section(&contents, Some(&id))
                                 {
-                                    let cd = crash_dump.lock().unwrap();
-                                    cd.processes.insert(id, InfoOrIndex::Info(proc));
+                                    crash_dump.processes.insert(id, InfoOrIndex::Info(proc));
                                 }
                             }
                         }
@@ -585,12 +611,10 @@ impl CrashDump {
                                 if let Ok(DumpSection::Generic(proc_heap)) =
                                     parse_section(&contents, Some(&id))
                                 {
-                                    let cd = crash_dump.lock().unwrap();
                                     proc_heap.raw_lines.into_iter().for_each(|line| {
-                                        let parts: Vec<&str> = line.splitn(2, ':').collect();
-                                        if parts.len() == 2 {
-                                            cd.all_heap_addresses
-                                                .insert(parts[0].to_string(), parts[1].to_string());
+                                        if let Some((key, value)) = line.split_once(':') {
+                                            crash_dump.all_heap_addresses
+                                                .insert(key.to_string(), value.to_string());
                                         } else {
                                             eprintln!(
                                                 "Line does not contain expected delimiter: {}",
@@ -606,12 +630,10 @@ impl CrashDump {
                                 if let Ok(DumpSection::Generic(literals)) =
                                     parse_section(&contents, None)
                                 {
-                                    let cd = crash_dump.lock().unwrap();
                                     literals.raw_lines.into_iter().for_each(|line| {
-                                        let parts: Vec<&str> = line.splitn(2, ':').collect();
-                                        if parts.len() == 2 {
-                                            cd.all_heap_addresses
-                                                .insert(parts[0].to_string(), parts[1].to_string());
+                                        if let Some((key, value)) = line.split_once(':') {
+                                            crash_dump.all_heap_addresses
+                                                .insert(key.to_string(), value.to_string());
                                         } else {
                                             eprintln!(
                                                 "Line does not contain expected delimiter: {}",
@@ -627,12 +649,10 @@ impl CrashDump {
                                 if let Ok(DumpSection::Generic(persistent_terms)) =
                                     parse_section(&contents, None)
                                 {
-                                    let cd = crash_dump.lock().unwrap();
                                     persistent_terms.raw_lines.into_iter().for_each(|line| {
-                                        let parts: Vec<&str> = line.splitn(2, '|').collect();
-                                        if parts.len() == 2 {
-                                            cd.all_heap_addresses
-                                                .insert(parts[0].to_string(), parts[1].to_string());
+                                        if let Some((key, value)) = line.split_once('|') {
+                                            crash_dump.all_heap_addresses
+                                                .insert(key.to_string(), value.to_string());
                                         } else {
                                             eprintln!(
                                                 "Line does not contain expected delimiter: {}",
@@ -660,7 +680,7 @@ impl CrashDump {
                                 if let Ok(DumpSection::Preamble(preamble)) =
                                     parse_section(&contents, Some(&id))
                                 {
-                                    crash_dump.lock().unwrap().preamble = preamble;
+                                    *crash_dump.preamble.lock().unwrap() = preamble;
                                 }
                             }
                             Tag::Proc => {
@@ -668,32 +688,24 @@ impl CrashDump {
                             }
                             Tag::ProcHeap => {
                                 crash_dump
-                                    .lock()
-                                    .unwrap()
                                     .processes_heap
                                     .insert(id.clone(), InfoOrIndex::Index(index_row.clone()));
                                 tx.send((*tag, id.clone(), index_row.clone())).unwrap();
                             }
                             Tag::ProcStack => {
                                 crash_dump
-                                    .lock()
-                                    .unwrap()
                                     .processes_stack
                                     .insert(id.clone(), InfoOrIndex::Index(index_row.clone()));
                             }
                             Tag::ProcMessages => {
                                 crash_dump
-                                    .lock()
-                                    .unwrap()
                                     .processes_messages
                                     .insert(id.clone(), InfoOrIndex::Index(index_row.clone()));
                             }
                             Tag::Binary => {
                                 if let Some(binary_id) = &index_row.id {
-                                    let len = index_row.length.parse::<usize>().unwrap_or(0);
+                                    let len = index_row.length as usize;
                                     crash_dump
-                                        .lock()
-                                        .unwrap()
                                         .visited_binaries
                                         .insert(binary_id.clone(), len);
                                 }
@@ -716,7 +728,7 @@ impl CrashDump {
                                 if let Ok(DumpSection::Memory(memory)) =
                                     parse_section(&contents, None)
                                 {
-                                    crash_dump.lock().unwrap().memory = memory;
+                                    *crash_dump.memory.lock().unwrap() = memory;
                                 }
                             }
                             _ => {}
@@ -736,9 +748,7 @@ impl CrashDump {
 
         //println!("handle {:?}", handles);
         Ok(Arc::try_unwrap(crash_dump)
-            .unwrap_or_else(|arc| panic!("Mutex still locked: {:?}", arc))
-            .into_inner()
-            .unwrap())
+            .unwrap_or_else(|arc| panic!("Arc still has multiple strong references: {:?}", Arc::strong_count(&arc))))
     }
 
     // lines will look like `lA1E:jose_xchacha20_poly1305_crypto|HFFFF4541B8B0`
@@ -759,30 +769,47 @@ impl CrashDump {
 
                     if parts.len() == 2 {
                         let addr = parts[0];
-                        match self.parse_datatype(parts[1], 0) {
-                            Ok(parsed_res) => {
-                                text.lines.push(Line::from(vec![
-                                    Span::styled(
-                                        format!("{}", addr),
-                                        Style::default().fg(colors.info_preamble),
-                                    ),
-                                    Span::raw(" - "),
-                                    Span::styled(
-                                        format!("{}", parsed_res),
-                                        Style::default().fg(colors.info_text),
-                                    ),
-                                ]));
+                        match self.parse_datatype_formatted_colored(parts[1], 0, colors) {
+                            Ok(parsed_lines) => {
+                                // First line with address
+                                let first_line = if parsed_lines.is_empty() {
+                                    Line::from(vec![
+                                        Span::styled(
+                                            format!("{}", addr),
+                                            Style::default().fg(colors.info_preamble).bold(),
+                                        ),
+                                        Span::raw(" → "),
+                                    ])
+                                } else {
+                                    let mut spans = vec![
+                                        Span::styled(
+                                            format!("{}", addr),
+                                            Style::default().fg(colors.info_preamble).bold(),
+                                        ),
+                                        Span::raw(" → "),
+                                    ];
+                                    spans.extend(parsed_lines[0].clone());
+                                    Line::from(spans)
+                                };
+                                text.lines.push(first_line);
+
+                                // Add subsequent lines with proper indentation
+                                for parsed_line in parsed_lines.iter().skip(1) {
+                                    let mut spans = vec![Span::raw("       ")]; // Indent
+                                    spans.extend(parsed_line.clone());
+                                    text.lines.push(Line::from(spans));
+                                }
                             }
                             Err(err) => {
                                 text.lines.push(Line::from(vec![
                                     Span::styled(
                                         format!("{}", addr),
-                                        Style::default().fg(colors.info_preamble),
+                                        Style::default().fg(colors.info_preamble).bold(),
                                     ),
-                                    Span::raw(" - "),
+                                    Span::raw(" → "),
                                     Span::styled(
                                         format!("{}", err),
-                                        Style::default().fg(colors.alt_color_1),
+                                        Style::default().fg(colors.alt_color_3),
                                     ),
                                 ]));
                             }
@@ -814,7 +841,9 @@ impl CrashDump {
             proc_stack.frames.into_iter().for_each(|frame| {
                 let mut current_line_variables = Vec::new();
                 frame.variables.into_iter().for_each(|variable| {
-                    current_line_variables.push(self.parse_datatype(&variable, 0).unwrap());
+                    let parsed = self.parse_datatype(&variable, 0)
+                        .unwrap_or_else(|e| format!("<parse error: {}>", e));
+                    current_line_variables.push(parsed);
                 });
                 let line = Line::from(vec![
                     Span::styled(
@@ -860,8 +889,10 @@ impl CrashDump {
                 .for_each(|(message_addr, message_val)| {
                     // set the ADDR to be Yellow and the Value to be Cyan
                     // and try to parse each data type
-                    let message_addr = self.parse_datatype(&message_addr, 0).unwrap();
-                    let message_val = self.parse_datatype(&message_val, 0).unwrap();
+                    let message_addr = self.parse_datatype(&message_addr, 0)
+                        .unwrap_or_else(|e| format!("<parse error: {}>", e));
+                    let message_val = self.parse_datatype(&message_val, 0)
+                        .unwrap_or_else(|e| format!("<parse error: {}>", e));
                     let line = Line::from(vec![
                         Span::styled(message_addr, Style::default().fg(colors.info_preamble)),
                         Span::raw(" - "),
@@ -907,7 +938,7 @@ impl CrashDump {
     // let result = parse_datatype("t2:I1,I2", 0);
     // assert_eq!(result, Ok("{1, 2}".to_string()));
     // ```
-    fn parse_datatype(&self, data: &str, depth: usize) -> Result<String, String> {
+    pub fn parse_datatype(&self, data: &str, depth: usize) -> Result<String, String> {
         if depth > MAX_DEPTH_PARSE_DATATYPE {
             return Ok(format!("(*{})", data));
         }
@@ -936,22 +967,326 @@ impl CrashDump {
         }
     }
 
+    // Formatted version of parse_datatype that returns multiple lines with proper indentation
+    // for better readability in the UI
+    pub fn parse_datatype_formatted(&self, data: &str, depth: usize) -> Result<Vec<String>, String> {
+        const MAX_INLINE_LENGTH: usize = 80; // Max length before breaking to multiple lines
+
+        // First try the regular parser
+        let parsed = self.parse_datatype(data, depth)?;
+
+        // If the result is short enough, return it as a single line
+        if parsed.len() <= MAX_INLINE_LENGTH {
+            return Ok(vec![parsed]);
+        }
+
+        // For longer results, format with indentation based on structure
+        let mut lines = Vec::new();
+        self.format_datatype_multiline(data, depth, 0, &mut lines)?;
+        Ok(lines)
+    }
+
+    // Colored version that returns Vec<Vec<Span>> for syntax highlighting
+    pub fn parse_datatype_formatted_colored<'a>(&'a self, data: &str, depth: usize, colors: &CommonColors) -> Result<Vec<Vec<Span<'a>>>, String> {
+        const MAX_INLINE_LENGTH: usize = 80;
+
+        // First try the regular parser to check length
+        let parsed = self.parse_datatype(data, depth)?;
+
+        // If short enough, colorize and return as single line
+        if parsed.len() <= MAX_INLINE_LENGTH {
+            let spans = self.colorize_datatype(data, depth, colors)?;
+            return Ok(vec![spans]);
+        }
+
+        // For longer results, format with indentation and color
+        let mut lines = Vec::new();
+        self.format_datatype_multiline_colored(data, depth, 0, &mut lines, colors)?;
+        Ok(lines)
+    }
+
+    // Colorize a single datatype element
+    fn colorize_datatype<'a>(&'a self, data: &str, depth: usize, colors: &CommonColors) -> Result<Vec<Span<'a>>, String> {
+        if depth > MAX_DEPTH_PARSE_DATATYPE {
+            return Ok(vec![Span::styled(
+                format!("(*{})", data),
+                Style::default().fg(colors.alt_color_2),
+            )]);
+        }
+
+        let depth = depth + 1;
+
+        match data.chars().next() {
+            Some('t') => self.colorize_tuple(data, depth, colors),
+            Some('A') => Ok(vec![Span::styled(
+                self.parse_atom(data),
+                Style::default().fg(colors.alt_color_1),
+            )]),
+            Some('I') => Ok(vec![Span::styled(
+                self.parse_int(data).map_err(|e| e.to_string())?.to_string(),
+                Style::default().fg(colors.alt_color_2),
+            )]),
+            Some('N') => Ok(vec![Span::styled(
+                "[]",
+                Style::default().fg(colors.default_text),
+            )]),
+            Some('l') => self.colorize_list(data, depth, colors),
+            Some('H') => {
+                let addr = &data[1..];
+                match self.all_heap_addresses.get(addr) {
+                    Some(heap_data) => {
+                        let mut spans = vec![
+                            Span::styled("@", Style::default().fg(colors.info_preamble)),
+                            Span::styled(addr.to_string(), Style::default().fg(colors.info_preamble)),
+                            Span::raw(" → "),
+                        ];
+                        spans.extend(self.colorize_datatype(heap_data.value(), depth, colors)?);
+                        Ok(spans)
+                    }
+                    None => Ok(vec![
+                        Span::styled("@", Style::default().fg(colors.info_preamble)),
+                        Span::styled(addr.to_string(), Style::default().fg(colors.info_preamble)),
+                        Span::styled(" (unresolved)", Style::default().fg(colors.alt_color_3)),
+                    ]),
+                }
+            }
+            Some('P') | Some('p') => Ok(vec![Span::styled(
+                self.parse_pid(data)?,
+                Style::default().fg(colors.alt_color_2),
+            )]),
+            Some('M') => Ok(vec![Span::styled(
+                format!("Map: {}", data),
+                Style::default().fg(colors.info_text),
+            )]),
+            _ => {
+                let parsed = self.parse_datatype(data, depth)?;
+                Ok(vec![Span::styled(parsed, Style::default().fg(colors.info_text))])
+            }
+        }
+    }
+
+    fn colorize_tuple<'a>(&'a self, data: &str, depth: usize, colors: &CommonColors) -> Result<Vec<Span<'a>>, String> {
+        let mut chars = data.chars();
+        chars.next(); // Consume 't'
+
+        let mut size_str = String::new();
+        while let Some(c) = chars.next() {
+            if c.is_digit(16) {
+                size_str.push(c);
+            } else if c == ':' {
+                break;
+            } else {
+                return Err(format!("Invalid tuple format: {}", data));
+            }
+        }
+
+        let remaining_data = chars.as_str();
+        let parts: Vec<&str> = remaining_data.split(',').collect();
+
+        let mut spans = vec![Span::styled("{", Style::default().fg(colors.default_text))];
+
+        for (i, part) in parts.iter().enumerate() {
+            spans.extend(self.colorize_datatype(part, depth, colors)?);
+            if i < parts.len() - 1 {
+                spans.push(Span::raw(", "));
+            }
+        }
+
+        spans.push(Span::styled("}", Style::default().fg(colors.default_text)));
+        Ok(spans)
+    }
+
+    fn colorize_list<'a>(&'a self, data: &str, depth: usize, colors: &CommonColors) -> Result<Vec<Span<'a>>, String> {
+        let parts = data[1..].split('|').collect::<Vec<_>>();
+
+        let mut spans = vec![Span::styled("[", Style::default().fg(colors.default_text))];
+
+        for (i, part) in parts.iter().enumerate() {
+            spans.extend(self.colorize_datatype(part, depth, colors)?);
+            if i < parts.len() - 1 {
+                spans.push(Span::raw(", "));
+            }
+        }
+
+        spans.push(Span::styled("]", Style::default().fg(colors.default_text)));
+        Ok(spans)
+    }
+
+    fn format_datatype_multiline_colored<'a>(&'a self, data: &str, depth: usize, indent_level: usize, lines: &mut Vec<Vec<Span<'a>>>, colors: &CommonColors) -> Result<(), String> {
+        if depth > MAX_DEPTH_PARSE_DATATYPE {
+            lines.push(vec![
+                Span::raw("  ".repeat(indent_level)),
+                Span::styled(format!("(*{})", data), Style::default().fg(colors.alt_color_2)),
+            ]);
+            return Ok(());
+        }
+
+        let depth = depth + 1;
+        let indent = "  ".repeat(indent_level);
+
+        match data.chars().next() {
+            Some('t') => {
+                let mut chars = data.chars();
+                chars.next();
+
+                let mut size_str = String::new();
+                while let Some(c) = chars.next() {
+                    if c.is_digit(16) {
+                        size_str.push(c);
+                    } else if c == ':' {
+                        break;
+                    } else {
+                        return Err(format!("Invalid tuple format: {}", data));
+                    }
+                }
+
+                let remaining_data = chars.as_str();
+                let parts: Vec<&str> = remaining_data.split(',').collect();
+
+                if parts.len() == 1 {
+                    let mut spans = vec![Span::raw(indent.clone() + "{")];
+                    spans.extend(self.colorize_datatype(parts[0], depth, colors)?);
+                    spans.push(Span::raw("}"));
+                    lines.push(spans);
+                } else {
+                    lines.push(vec![Span::raw(indent.clone() + "{")]);
+                    for (i, part) in parts.iter().enumerate() {
+                        let mut spans = vec![Span::raw("  ".repeat(indent_level + 1))];
+                        spans.extend(self.colorize_datatype(part, depth, colors)?);
+                        if i < parts.len() - 1 {
+                            spans.push(Span::raw(","));
+                        }
+                        lines.push(spans);
+                    }
+                    lines.push(vec![Span::raw(indent + "}")]);
+                }
+            }
+            Some('l') => {
+                let parts = data[1..].split('|').collect::<Vec<_>>();
+
+                if parts.len() == 1 {
+                    let mut spans = vec![Span::raw(indent.clone() + "[")];
+                    spans.extend(self.colorize_datatype(parts[0], depth, colors)?);
+                    spans.push(Span::raw("]"));
+                    lines.push(spans);
+                } else {
+                    lines.push(vec![Span::raw(indent.clone() + "[")]);
+                    for (i, part) in parts.iter().enumerate() {
+                        let mut spans = vec![Span::raw("  ".repeat(indent_level + 1))];
+                        spans.extend(self.colorize_datatype(part, depth, colors)?);
+                        if i < parts.len() - 1 {
+                            spans.push(Span::raw(","));
+                        }
+                        lines.push(spans);
+                    }
+                    lines.push(vec![Span::raw(indent + "]")]);
+                }
+            }
+            _ => {
+                let mut spans = vec![Span::raw(indent)];
+                spans.extend(self.colorize_datatype(data, depth, colors)?);
+                lines.push(spans);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn format_datatype_multiline(&self, data: &str, depth: usize, indent_level: usize, lines: &mut Vec<String>) -> Result<(), String> {
+        if depth > MAX_DEPTH_PARSE_DATATYPE {
+            lines.push(format!("{}(*{})", "  ".repeat(indent_level), data));
+            return Ok(());
+        }
+
+        let depth = depth + 1;
+        let indent = "  ".repeat(indent_level);
+
+        match data.chars().next() {
+            Some('t') => {
+                // Tuple - format as {
+                //   element1,
+                //   element2
+                // }
+                let mut chars = data.chars();
+                chars.next(); // Consume 't'
+
+                let mut size_str = String::new();
+                while let Some(c) = chars.next() {
+                    if c.is_digit(16) {
+                        size_str.push(c);
+                    } else if c == ':' {
+                        break;
+                    } else {
+                        return Err(format!("Invalid tuple format: {}", data));
+                    }
+                }
+
+                let remaining_data = chars.as_str();
+                let parts: Vec<&str> = remaining_data.split(',').collect();
+
+                if parts.len() == 1 {
+                    // Single element tuple, keep on one line
+                    let parsed = self.parse_datatype(parts[0], depth)?;
+                    lines.push(format!("{}{{{}}}", indent, parsed));
+                } else {
+                    lines.push(format!("{}{{", indent));
+                    for (i, part) in parts.iter().enumerate() {
+                        let parsed = self.parse_datatype(part, depth)?;
+                        let comma = if i < parts.len() - 1 { "," } else { "" };
+                        lines.push(format!("{}  {}{}", indent, parsed, comma));
+                    }
+                    lines.push(format!("{}}}", indent));
+                }
+            }
+            Some('l') => {
+                // List - format as [
+                //   element1,
+                //   element2
+                // ]
+                let parts = data[1..].split('|').collect::<Vec<_>>();
+
+                if parts.len() == 1 {
+                    // Single element list, keep on one line
+                    let parsed = self.parse_datatype(parts[0], depth)?;
+                    lines.push(format!("{}[{}]", indent, parsed));
+                } else {
+                    lines.push(format!("{}[", indent));
+                    for (i, part) in parts.iter().enumerate() {
+                        let parsed = self.parse_datatype(part, depth)?;
+                        let comma = if i < parts.len() - 1 { "," } else { "" };
+                        lines.push(format!("{}  {}{}", indent, parsed, comma));
+                    }
+                    lines.push(format!("{}]", indent));
+                }
+            }
+            Some('M') => {
+                // Map - just show raw for now
+                lines.push(format!("{}Map: {}", indent, data));
+            }
+            _ => {
+                // For other types, use the standard parser
+                let parsed = self.parse_datatype(data, depth)?;
+                lines.push(format!("{}{}", indent, parsed));
+            }
+        }
+
+        Ok(())
+    }
+
     // for now treat S as a string
     fn parse_string(&self, data: &str) -> String {
-        let parts: Vec<&str> = data.splitn(2, ':').collect();
-        if parts.len() > 1 {
-            parts[1].to_string()
+        if let Some((_, value)) = data.split_once(':') {
+            value.to_string()
         } else {
-            "".to_string()
+            String::new()
         }
     }
 
     fn parse_atom(&self, data: &str) -> String {
-        let parts: Vec<&str> = data.splitn(2, ':').collect();
-        if parts.len() > 1 {
-            parts[1].to_string()
+        if let Some((_, value)) = data.split_once(':') {
+            value.to_string()
         } else {
-            "".to_string()
+            String::new()
         }
     }
 
@@ -1066,8 +1401,12 @@ impl CrashDump {
         let addr = &data[1..]; // Remove 'H'
 
         match self.all_heap_addresses.get(addr) {
-            Some(heap_data) => self.parse_datatype(heap_data.value(), depth),
-            None => Ok(format!("*U - {}", addr)),
+            Some(heap_data) => {
+                let decoded = self.parse_datatype(heap_data.value(), depth)?;
+                // Show both address and decoded value for clarity
+                Ok(format!("@{} → {}", addr, decoded))
+            }
+            None => Ok(format!("@{} (unresolved)", addr)),
         }
     }
 
@@ -1910,9 +2249,7 @@ pub struct ProgramCounter {
 
 impl ProgramCounter {
     pub fn from_string(s: &str) -> Option<Self> {
-        let re =
-            Regex::new(r"Program counter: (0x[0-9a-fA-F]+) \(([^:]+):([^/]+)/(\d+) \+ (\d+)\)")
-                .unwrap();
+        let re = get_program_counter_regex();
         re.captures(s).map(|caps| ProgramCounter {
             address: caps[1].to_string(),
             function: caps[2].to_string(),
@@ -1976,14 +2313,9 @@ impl ProcStackInfo {
         let mut offset = 0;
         let mut arity = 0;
 
-        // More generic regex to capture function info.
-        let re_func_info = Regex::new(
-            r"^(?P<address>0x[0-9A-Fa-f]+):S(?:Return addr|Catch)\s+(?P<retaddr>0x[0-9A-Fa-f]+)\s+\((?P<module>[^:]+):(?P<function>[^/]+)/(?P<arity>\d+)\s*\+\s*(?P<offset>\d+)\)",
-        ).unwrap();
-        // Regex to capture cases where there isn't a module e.g. <terminate process normally>
-        let re_no_module = Regex::new(
-            r"^(?P<address>0x[0-9A-Fa-f]+):S(?:Return addr|Catch)\s+(?P<retaddr>0x[0-9A-Fa-f]+)\s+\((?P<function><[^>]+>)\)",
-        ).unwrap();
+        // Use cached regex patterns for performance
+        let re_func_info = get_stack_func_info_regex();
+        let re_no_module = get_stack_no_module_regex();
 
         let mut current_frame = StackFrame {
             address: frame_address.clone(),
@@ -2062,7 +2394,7 @@ pub struct ProcMessagesInfo {
 
 // ProcMessages are arranged with <ADDR>:<VALUE> format, we can just parse .data
 impl ProcMessagesInfo {
-    fn from_generic_section(section: &GenericSection) -> Result<Self, String> {
+    pub fn from_generic_section(section: &GenericSection) -> Result<Self, String> {
         if section.tag != TAG_PROC_MESSAGES {
             return Err("Not a proc_messages section".to_string());
         }
