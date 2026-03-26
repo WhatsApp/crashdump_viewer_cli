@@ -34,7 +34,10 @@ pub struct Tui<B: Backend> {
     pub events: EventHandler,
 }
 
-impl<B: Backend> Tui<B> {
+impl<B> Tui<B>
+where
+    B: Backend<Error: 'static>,
+{
     /// Constructs a new instance of [`Tui`].
     pub fn new(terminal: Terminal<B>, events: EventHandler) -> Self {
         Self { terminal, events }
